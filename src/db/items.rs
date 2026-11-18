@@ -134,6 +134,9 @@ pub struct Summary {
     pub format: String,
     pub type_name: String,
     pub type_slug: String,
+    pub creator_label: String,
+    pub tags: String,
+    pub created_at: i64,
     pub location_path: Option<String>,
     pub loan: Option<ActiveLoan>,
     pub photo_count: i64,
@@ -274,7 +277,8 @@ pub fn sync_fts(conn: &Connection, id: i64) -> Result<()> {
                 coalesce((SELECT group_concat(d.name || ' ' || f.value, ' ')
                           FROM item_fields f JOIN field_defs d ON d.id = f.field_id
                           WHERE f.item_id = i.id), '') || ' ' || coalesce(i.year, '') || ' ' || i.format
-         FROM items i WHERE i.id = ?1",
+                || ' ' || t.name || ' ' || t.section
+         FROM items i JOIN media_types t ON t.id = i.type_id WHERE i.id = ?1",
         [id],
     )?;
     Ok(())
@@ -325,7 +329,8 @@ const SUMMARY_SELECT: &str = "SELECT i.id, i.title, i.creator, i.year, i.format,
         ln.borrower, ln.loaned_at,
         (SELECT count(*) FROM photos p WHERE p.item_id = i.id),
         (SELECT p.file FROM photos p WHERE p.item_id = i.id ORDER BY p.position, p.id LIMIT 1),
-        coalesce((SELECT p.caption FROM photos p WHERE p.item_id = i.id ORDER BY p.position, p.id LIMIT 1), '')
+        coalesce((SELECT p.caption FROM photos p WHERE p.item_id = i.id ORDER BY p.position, p.id LIMIT 1), ''),
+        t.creator_label, i.tags, i.created_at
     FROM items i JOIN media_types t ON t.id = i.type_id
     LEFT JOIN locations l ON l.id = i.location_id
     LEFT JOIN loans ln ON ln.item_id = i.id AND ln.returned_at IS NULL";
@@ -341,6 +346,9 @@ fn summary_from_row(r: &Row) -> rusqlite::Result<Summary> {
         format: r.get(4)?,
         type_name: r.get(5)?,
         type_slug: r.get(6)?,
+        creator_label: r.get(13)?,
+        tags: r.get(14)?,
+        created_at: r.get(15)?,
         location_path: r.get(7)?,
         loan: borrower.zip(since).map(|(borrower, since)| ActiveLoan { borrower, since }),
         photo_count: r.get(10)?,

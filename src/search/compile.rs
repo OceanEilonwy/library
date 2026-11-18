@@ -168,12 +168,18 @@ pub fn fts_expr(t: &Term) -> Option<String> {
 fn text_term(t: &Term, out: &mut Sql) {
     if t.field == Field::Code {
         let digits = crate::util::normalize_identifier(&t.text);
-        if !digits.is_empty() && !t.has_wildcards() {
-            let isbn13 = crate::util::isbn13(&digits);
+        if digits.len() >= 8 && !t.has_wildcards() {
+            // ISBN-10 and -13 share a 9-digit core.
+            let thirteen = crate::util::isbn13(&digits);
+            let core = if thirteen.len() == 13 && (thirteen.starts_with("978") || thirteen.starts_with("979")) {
+                thirteen[3..12].to_owned()
+            } else {
+                digits
+            };
             push(
                 out,
-                "(replace(replace(upper(i.identifier), '-', ''), ' ', '') IN (?, ?))",
-                [Value::Text(digits), Value::Text(isbn13)],
+                "(replace(replace(upper(i.identifier), '-', ''), ' ', '') LIKE ?)",
+                [Value::Text(format!("%{core}%"))],
             );
             return;
         }

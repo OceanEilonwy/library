@@ -13,7 +13,7 @@ base64 = "0.22"
 candle-core = "0.11"
 candle-nn = "0.11"
 candle-transformers = "0.11"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 hmac = "0.12"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "service"] }
@@ -22,6 +22,7 @@ jiff = "0.2"
 maud = "0.27"
 mime_guess = "2"
 rand = "0.8"
+rpassword = "7"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
 rusqlite = { version = "0.37", features = ["bundled", "functions"] }
 rust-embed = { version = "8", features = ["include-exclude"] }

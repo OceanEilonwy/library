@@ -25,7 +25,7 @@ rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
 rusqlite = { version = "0.37", features = ["bundled", "functions"] }
 rust-embed = { version = "8", features = ["include-exclude"] }
-rxing = { version = "0.7", default-features = false, features = ["image"] }
+rxing = { version = "0.7", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

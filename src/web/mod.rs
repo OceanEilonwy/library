@@ -319,17 +319,26 @@ impl<S: Send + Sync> FromRequest<S> for Fields {
 
 // ---------- middleware ----------
 
-const CSP: &str = "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; \
-    font-src 'self'; connect-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'self'; \
-    form-action 'self'; frame-ancestors 'none'";
+/// The Content-Security-Policy, allowing the one inline style by hash.
+fn csp() -> &'static HeaderValue {
+    static V: OnceLock<HeaderValue> = OnceLock::new();
+    V.get_or_init(|| {
+        use base64::Engine;
+        let hash = base64::engine::general_purpose::STANDARD
+            .encode(Sha256::digest(views::CRITICAL_CSS.as_bytes()));
+        let policy = format!(
+            "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'sha256-{hash}'; \
+             script-src 'self'; font-src 'self'; connect-src 'self'; media-src 'self' blob:; \
+             object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+        );
+        HeaderValue::from_str(&policy).expect("valid header")
+    })
+}
 
 async fn security_headers(req: Request, next: Next) -> Response {
     let mut res = next.run(req).await;
     let h = res.headers_mut();
-    h.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(CSP),
-    );
+    h.insert(header::CONTENT_SECURITY_POLICY, csp().clone());
     h.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),

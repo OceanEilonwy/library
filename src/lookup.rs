@@ -50,6 +50,8 @@ pub struct Candidate {
     pub description: String,
     pub tags: String,
     pub cover_url: Option<String>,
+    /// Open Library work key ("/works/OL…W"), for fetching the description.
+    pub work: Option<String>,
 }
 
 impl Candidate {
@@ -287,6 +289,39 @@ impl Lookups {
         Ok(parse_upc(&json))
     }
 
+    /// Fills in a missing description for a picked candidate: from the Open
+    /// Library work record, else from Google Books by ISBN. Best effort.
+    pub async fn enrich(&self, c: &mut Candidate) {
+        if !self.cfg.enabled || !c.description.trim().is_empty() {
+            return;
+        }
+        if let Some(work) = c.work.clone() {
+            let url = format!(
+                "{}{work}.json",
+                self.cfg.open_library_url.trim_end_matches('/')
+            );
+            match self.get_json(self.client.get(url)).await {
+                Ok(json) => c.description = parse_ol_description(&json),
+                Err(e) => tracing::info!(error = %e, "Open Library work lookup failed"),
+            }
+        }
+        let code = util::normalize_identifier(&c.identifier);
+        if c.description.is_empty() && (code.len() == 10 || code.len() == 13) {
+            match self.google_books("", Some(&code)).await {
+                Ok(found) => {
+                    if let Some(d) = found
+                        .into_iter()
+                        .map(|x| x.description)
+                        .find(|d| !d.is_empty())
+                    {
+                        c.description = d;
+                    }
+                }
+                Err(e) => tracing::info!(error = %e, "Google Books description lookup failed"),
+            }
+        }
+    }
+
     /// Downloads a cover image (max 8 MB).
     pub async fn fetch_image(&self, url: &str) -> Result<Vec<u8>> {
         if !url.starts_with("https://") && !url.starts_with("http://") {
@@ -389,6 +424,7 @@ pub fn parse_open_library(json: &Value, isbn: Option<&str>) -> Vec<Candidate> {
                     .get("cover_i")
                     .and_then(Value::as_i64)
                     .map(|id| format!("https://covers.openlibrary.org/b/id/{id}-L.jpg")),
+                work: Some(s(d, "key")).filter(|k| k.starts_with("/works/")),
             }
         })
         .collect()
@@ -422,6 +458,7 @@ pub fn parse_google_books(json: &Value) -> Vec<Candidate> {
             }
             Candidate {
                 source: None,
+                work: None,
                 title,
                 creator: strs(v, "authors").join(", "),
                 year: year_of(&s(v, "publishedDate")),
@@ -494,6 +531,7 @@ pub fn parse_musicbrainz(json: &Value) -> Vec<Candidate> {
             let id = s(r, "id");
             Candidate {
                 source: None,
+                work: None,
                 title: s(r, "title"),
                 creator: artist.trim().to_owned(),
                 year: year_of(&s(r, "date")),
@@ -519,6 +557,7 @@ pub fn parse_tmdb(json: &Value) -> Vec<Candidate> {
         .filter(|r| !s(r, "title").is_empty())
         .map(|r| Candidate {
             source: None,
+            work: None,
             title: s(r, "title"),
             creator: String::new(),
             year: year_of(&s(r, "release_date")),
@@ -544,6 +583,7 @@ pub fn parse_upc(json: &Value) -> Vec<Candidate> {
         .filter(|i| !s(i, "title").is_empty())
         .map(|i| Candidate {
             source: None,
+            work: None,
             title: s(i, "title"),
             creator: s(i, "brand"),
             year: None,
@@ -561,6 +601,38 @@ pub fn parse_upc(json: &Value) -> Vec<Candidate> {
                 .map(https),
         })
         .collect()
+}
+
+/// The description from an Open Library work record, without the
+/// "([source][1])" footnotes and link lists it often carries.
+pub fn parse_ol_description(json: &Value) -> String {
+    let raw = match json.get("description") {
+        Some(Value::String(t)) => t.clone(),
+        Some(Value::Object(o)) => o
+            .get("value")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned(),
+        _ => return String::new(),
+    };
+    let mut text = raw.replace("\r\n", "\n");
+    for cut in ["\n----", "\n\n**Contains", "([source]", "\n[1]:"] {
+        if let Some(i) = text.find(cut) {
+            text.truncate(i);
+        }
+    }
+    let text = text.trim();
+    if text.chars().count() > 1000 {
+        let mut t: String = text.chars().take(1000).collect();
+        if let Some(i) = t.rfind(". ") {
+            t.truncate(i + 1);
+        } else {
+            t.push('…');
+        }
+        t
+    } else {
+        text.to_owned()
+    }
 }
 
 /// Drops near-identical candidates from different sources (same title,
@@ -708,6 +780,33 @@ mod tests {
     }
 
     #[test]
+    fn open_library_work_descriptions() {
+        assert_eq!(
+            parse_ol_description(&json!({"description": "A hobbit goes there and back."})),
+            "A hobbit goes there and back."
+        );
+        assert_eq!(
+            parse_ol_description(
+                &json!({"description": {"type": "/type/text", "value": "Bilbo travels.\r\n\n([source][1])\n\n[1]: http://x"}})
+            ),
+            "Bilbo travels."
+        );
+        assert_eq!(
+            parse_ol_description(&json!({"description": "Story.\n----------\nAlso contained in:"})),
+            "Story."
+        );
+        assert_eq!(parse_ol_description(&json!({})), "");
+        let long = "Sentence one. ".repeat(100);
+        let d = parse_ol_description(&json!({ "description": long }));
+        assert!(d.chars().count() <= 1000 && d.ends_with('.'));
+        let c = parse_open_library(
+            &json!({"docs": [{"title": "X", "key": "/works/OL1W"}]}),
+            None,
+        );
+        assert_eq!(c[0].work.as_deref(), Some("/works/OL1W"));
+    }
+
+    #[test]
     fn dedupe_keeps_first() {
         let mut v = vec![
             Candidate {
@@ -771,9 +870,10 @@ mod tests {
                 get(|h: HeaderMap| async move {
                     let ua = h.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or("").to_owned();
                     assert!(ua.starts_with("home-library/"), "{ua}");
-                    Json(json!({"docs": [{"title": "The Hobbit", "author_name": ["Tolkien"], "first_publish_year": 1937}]}))
+                    Json(json!({"docs": [{"title": "The Hobbit", "key": "/works/OL27482W", "author_name": ["Tolkien"], "first_publish_year": 1937}]}))
                 }),
             )
+            .route("/ol/works/OL27482W.json", get(|| async { Json(json!({"description": {"value": "Bilbo Baggins is swept into a quest."}})) }))
             .route("/gb/volumes", get(|| async { (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "boom") }))
             .route(
                 "/mb/release/",
@@ -796,6 +896,9 @@ mod tests {
         assert_eq!(books.candidates.len(), 1);
         assert_eq!(books.candidates[0].source, Some(Source::OpenLibrary));
         assert_eq!(books.notes, vec!["Google Books didn't answer."]);
+        let mut picked = books.candidates[0].clone();
+        l.enrich(&mut picked).await;
+        assert_eq!(picked.description, "Bilbo Baggins is swept into a quest.");
         let music = l.search("blue", Some(Lookup::Music)).await;
         assert_eq!(music.candidates[0].creator, "Joni Mitchell");
         let films = l.search("totoro", Some(Lookup::Film)).await;

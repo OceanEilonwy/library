@@ -42,6 +42,9 @@ pub enum Header {
 
 const FAVICON: &str = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23fbf8f2'/%3E%3Ctext x='16' y='24' font-family='Georgia,serif' font-size='24' font-weight='700' text-anchor='middle' fill='%231f2629'%3EL%3C/text%3E%3C/svg%3E";
 
+/// Inline CSS allowed by hash in the Content-Security-Policy.
+pub const CRITICAL_CSS: &str = "html{background:#fbf8f2;color:#1f2629;color-scheme:light}";
+
 pub fn page(ctx: &Ctx, title: &str, header: Header, body: Markup) -> Markup {
     let full_title = if title.is_empty() {
         ctx.branding.title.clone()
@@ -56,6 +59,9 @@ pub fn page(ctx: &Ctx, title: &str, header: Header, body: Markup) -> Markup {
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 meta name="htmx-config" content=r#"{"includeIndicatorCSS":false,"defaultTimeout":20000}"#;
                 meta name="color-scheme" content="light";
+                // Paints the paper colour before the stylesheet arrives, so
+                // navigating never flashes the browser's dark background.
+                style { (maud::PreEscaped(CRITICAL_CSS)) }
                 title { (full_title) }
                 link rel="icon" href=(FAVICON);
                 link rel="stylesheet" href="/static/fonts/fonts.css";
@@ -162,7 +168,10 @@ fn compact_head(ctx: &Ctx, search: Option<&String>) -> Markup {
             div.admin-tools {
                 @if ctx.admin {
                     span.badge-admin { "● Librarian" }
-                    a.btn.small.solid href="/admin/items/new" { "New entry" }
+                    // Admin pages have their own buttons; don't repeat it here.
+                    @if search.is_some() {
+                        a.btn.small.solid href="/admin/items/new" { "New entry" }
+                    }
                 } @else {
                     (librarian_button(ctx))
                 }

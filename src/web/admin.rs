@@ -155,10 +155,14 @@ pub async fn new_item(
         type_id,
         ..Default::default()
     };
-    let picked = p
+    let mut picked = p
         .cand
         .as_deref()
         .and_then(|id| st.candidates.get(id).map(|c| (id.to_owned(), c)));
+    // Search results rarely carry a description; fetch one for the pick.
+    if let Some((_, c)) = picked.as_mut() {
+        st.lookups.enrich(c).await;
+    }
     let mut dupes = Vec::new();
     if let Some((_, c)) = &picked {
         input.title = c.title.clone();

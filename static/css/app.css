@@ -105,7 +105,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   color: var(--ink); text-decoration: none; line-height: 1.1;
 }
 .compact-head .grow { flex: 1 1 320px; min-width: 0; }
-.compact-head .admin-tools { display: flex; align-items: center; gap: 14px; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; }
+.compact-head .admin-tools { margin-left: auto; display: flex; align-items: center; gap: 14px; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; }
 
 /* ---------- sections nav ---------- */
 .sections {
@@ -301,6 +301,11 @@ details.add-field[open] > summary { margin-bottom: 14px; }
 .scan-panel video { width: 100%; max-height: 280px; background: #000; object-fit: cover; }
 
 /* ---------- admin pages ---------- */
+.stack { display: flex; flex-direction: column; gap: 20px; align-items: flex-start; margin: 0 0 12px; }
+.stack > .field { align-self: stretch; }
+.stack > .btn { margin-top: 4px; }
+.desk-actions { margin: 8px 0 32px; }
+.two-col h2.kicker { margin: 8px 0 4px; }
 .admin-list { list-style: none; margin: 0; padding: 0; }
 .admin-list li { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; border-bottom: 1px solid var(--rule); padding: 10px 0; }
 .admin-list li .grow { flex: 1 1 240px; min-width: 0; }
@@ -321,6 +326,10 @@ details.add-field[open] > summary { margin-bottom: 14px; }
 .unlock-page { max-width: 440px; margin: 48px auto; display: flex; flex-direction: column; gap: 16px; }
 
 footer.site { border-top: 1px solid var(--ink); margin-top: 48px; padding: 18px 0 32px; font-size: 13px; color: var(--muted); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+/* Smooth page-to-page navigation where supported (no blank frame). */
+@view-transition { navigation: auto; }
+@media (prefers-reduced-motion: reduce) { @view-transition { navigation: none; } }
 
 /* htmx request indicator (htmx's own CSS is disabled for the CSP) */
 .htmx-indicator { opacity: 0; transition: opacity 150ms ease-in 200ms; }

@@ -109,8 +109,18 @@ pub struct NewType<'a> {
     pub creator_label: &'a str,
 }
 
+/// "Equipment > Camping", "Equipment / Camping" and "Equipment·Camping"
+/// all become "Equipment · Camping" (the dot is hard to type).
+pub fn normalize_name(raw: &str) -> String {
+    raw.split(['>', '›', '·', '/', '\\'])
+        .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 pub fn create(conn: &Connection, t: &NewType) -> Result<MediaType> {
-    let name = util::clean(t.name, 60);
+    let name = util::clean(&normalize_name(t.name), 60);
     if name.is_empty() {
         bail!("A type needs a name.");
     }
@@ -392,6 +402,34 @@ mod tests {
                 )
                 .is_err()
             );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn type_names_get_the_middle_dot() {
+        assert_eq!(normalize_name("Equipment > Camping"), "Equipment · Camping");
+        assert_eq!(normalize_name("Equipment>Camping"), "Equipment · Camping");
+        assert_eq!(
+            normalize_name(" Equipment /  Water   sports "),
+            "Equipment · Water sports"
+        );
+        assert_eq!(normalize_name("Equipment · Tools"), "Equipment · Tools");
+        assert_eq!(normalize_name("Board games"), "Board games");
+        let (db, _d) = temp_db();
+        db.write_blocking(|c| {
+            let t = create(
+                c,
+                &NewType {
+                    name: "Equipment > Sports",
+                    section: "",
+                    lookup: Lookup::Product,
+                    creator_label: "",
+                },
+            )?;
+            assert_eq!(t.name, "Equipment · Sports");
+            assert_eq!(t.section, "Sports");
             Ok(())
         })
         .unwrap();

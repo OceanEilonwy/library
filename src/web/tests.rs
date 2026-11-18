@@ -207,6 +207,12 @@ async fn landing_page_and_security_headers() {
         .to_str()
         .unwrap();
     assert!(csp.contains("script-src 'self'"));
+    // The only inline style is allowed by its hash, so the page never flashes dark.
+    use base64::Engine;
+    let hash = base64::engine::general_purpose::STANDARD
+        .encode(Sha256::digest(crate::views::CRITICAL_CSS.as_bytes()));
+    assert!(csp.contains(&format!("'sha256-{hash}'")), "{csp}");
+    assert!(r.body.contains(crate::views::CRITICAL_CSS));
     assert_eq!(r.headers.get(header::X_FRAME_OPTIONS).unwrap(), "DENY");
 }
 

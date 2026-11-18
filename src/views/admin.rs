@@ -402,7 +402,8 @@ pub fn new_type_page(ctx: &Ctx, next: &str, name: &str, error: Option<&str>) -> 
                 input type="hidden" name="next" value=(next);
                 div.field {
                     label for="t-name" { "Name" }
-                    input #t-name.u-input name="name" value=(name) required maxlength="60" placeholder="Equipment · Sports";
+                    input #t-name.u-input name="name" value=(name) required maxlength="60" placeholder="Equipment > Sports";
+                    span.help { "Type > between parts; it becomes “Equipment · Sports”." }
                 }
                 div.field {
                     label for="t-section" { "Short label for the front page" }
@@ -450,11 +451,11 @@ pub fn desk(ctx: &Ctx, v: &DeskView) -> Markup {
                 @if v.pending_embeddings > 0 { " (" (v.pending_embeddings) " waiting to be indexed)" }
             }
             @if let Some(f) = v.flash { p.flash role="status" { (f) } }
-            div.row-actions { a.btn.solid href="/admin/items/new" { "New entry" } a.btn href="/admin/types/new?next=/admin" { "New type" } }
+            div.row-actions.desk-actions { a.btn.solid href="/admin/items/new" { "New entry" } a.btn href="/admin/types/new?next=/admin" { "New type" } }
             div.two-col {
                 section.left aria-labelledby="settings-title" {
                     h2 #settings-title .kicker { "The library" }
-                    form method="post" action="/admin/settings" {
+                    form.stack method="post" action="/admin/settings" {
                         div.field {
                             label for="s-title" { "Title" }
                             input #s-title.u-input.big name="title" value=(v.title) maxlength="80";

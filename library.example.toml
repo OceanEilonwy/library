@@ -1,0 +1,32 @@
+# The Library — configuration. Copy to library.toml and edit.
+
+# Keep this on localhost and put a reverse proxy with basic auth in front
+# (see deploy/Caddyfile).
+listen = "127.0.0.1:8080"
+
+# Database, photos, model files and the session key live here.
+data_dir = "/var/lib/library"
+
+# Shown until you change it on the Librarian's desk (/admin).
+default_title = "The Library"
+
+# Run `library hash-password` and paste the line it prints here.
+# admin_password_hash = "$argon2id$v=19$..."
+
+# Hand-drawn art. Defaults to <data_dir>/art. See README for file names.
+# art_dir = "/var/lib/library/art"
+
+[semantic]
+# Meaning-based search with a small local model (~130 MB, CPU only).
+enabled = true
+model = "BAAI/bge-small-en-v1.5"
+
+[lookup]
+# Fill in details from Open Library, Google Books, MusicBrainz, TMDb and a
+# barcode database when adding items.
+enabled = true
+# MusicBrainz asks clients to identify themselves; a URL or email is fine.
+# contact = "https://example.org"
+# Film lookups need a free TMDb "API Read Access Token".
+# tmdb_token = ""
+timeout_secs = 8

@@ -21,7 +21,8 @@ use crate::util;
 use compile::{IdeaMatches, Sql, compile};
 use query::{Field, Node, Term};
 
-const NEIGHBOURS: usize = 60;
+/// Neighbours fetched per query: enough to measure the query's baseline.
+const NEIGHBOURS: usize = 200;
 const MAX_MATCHES: i64 = 5000;
 const RRF_K: f64 = 60.0;
 
@@ -104,7 +105,9 @@ pub async fn search(db: &Db, semantic: &Semantic, req: Request) -> Result<Result
     let text_terms: Vec<Term> = node.positive_text_terms().into_iter().cloned().collect();
     let free_text: String = text_terms
         .iter()
-        .map(|t| t.text.trim_matches(['*', '?']))
+        // Wildcards mean "spelled like this", so they don't widen by meaning.
+        .filter(|t| !t.has_wildcards())
+        .map(|t| t.text.as_str())
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
@@ -140,10 +143,10 @@ fn run(
     let mut idea_rank: HashMap<i64, usize> = HashMap::new();
     for (text, v) in idea_vecs {
         let Some(v) = v else { continue };
-        let near: Vec<(i64, f32)> = embed::neighbours(c, &v, 100)?
-            .into_iter()
-            .filter(|(_, s)| *s >= th.idea)
-            .collect();
+        let all = embed::neighbours(c, &v, NEIGHBOURS)?;
+        let sims: Vec<f32> = all.iter().map(|(_, s)| *s).collect();
+        let cut = (th.baseline_for(&sims) + th.idea).max(th.floor);
+        let near: Vec<(i64, f32)> = all.into_iter().filter(|(_, s)| *s >= cut).collect();
         for (rank, (id, _)) in near.iter().enumerate() {
             let e = idea_rank.entry(*id).or_insert(rank);
             *e = (*e).min(rank);
@@ -164,13 +167,19 @@ fn run(
     let mut see_also_ids: Vec<i64> = Vec::new();
     if let Some(qv) = &query_vec {
         let near = embed::neighbours(c, qv, NEIGHBOURS)?;
+        let sims: Vec<f32> = near.iter().map(|(_, s)| *s).collect();
+        let base = th.baseline_for(&sims);
+        let (main_cut, see_cut) = (
+            (base + th.main).max(th.floor),
+            (base + th.see_also).max(th.floor - 0.05),
+        );
         for (rank, (id, _)) in near.iter().enumerate() {
             vec_rank.insert(*id, rank);
         }
         let structural = node.structural();
         let candidates: Vec<i64> = near
             .iter()
-            .filter(|(id, s)| *s >= th.see_also && !matched_set.contains(id))
+            .filter(|(id, s)| *s >= see_cut && !matched_set.contains(id))
             .map(|(id, _)| *id)
             .collect();
         let allowed: HashSet<i64> =
@@ -181,7 +190,7 @@ fn run(
             if !allowed.contains(id) {
                 continue;
             }
-            if *sim >= th.main {
+            if *sim >= main_cut {
                 idea_only.push(*id);
             } else if see_also_ids.len() < 3 {
                 see_also_ids.push(*id);
@@ -391,8 +400,9 @@ fn reason_for(s: &Summary, terms: &[Term]) -> Option<String> {
         if t.has_wildcards() {
             wildcard_match(hay, &t.text.to_lowercase())
         } else {
+            // Whole words only: "le" should not explain a match on "left".
             let needle = util::normalize(&t.text);
-            !needle.is_empty() && hay.contains(&needle)
+            !needle.is_empty() && format!(" {hay} ").contains(&format!(" {needle} "))
         }
     };
     let mut reasons: Vec<String> = Vec::new();

@@ -1,0 +1,30 @@
+[Unit]
+Description=The Library (home catalogue)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=library
+Group=library
+ExecStart=/usr/local/bin/library --config /etc/library/library.toml serve
+Restart=on-failure
+RestartSec=5
+Environment=RUST_LOG=library=info
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths=/var/lib/library
+StateDirectory=library
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

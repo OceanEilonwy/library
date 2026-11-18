@@ -1,0 +1,13 @@
+# Caddy in front of the library: HTTPS plus basic auth for everyone.
+# Make a password hash with:  caddy hash-password
+library.example.org {
+	encode zstd gzip
+	basic_auth {
+		family $2a$14$REPLACE_WITH_OUTPUT_OF_caddy_hash-password
+	}
+	# Photos can be large.
+	request_body {
+		max_size 100MB
+	}
+	reverse_proxy 127.0.0.1:8080
+}

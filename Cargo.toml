@@ -2,6 +2,7 @@
 name = "library"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 license = "MIT"
 description = "A home library catalogue: books, music, films and kit, with hybrid full-text and meaning-based search."
 

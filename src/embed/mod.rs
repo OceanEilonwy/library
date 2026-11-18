@@ -34,22 +34,43 @@ pub trait Embedder: Send + Sync + 'static {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Thresholds {
-    /// A meaning-only match joins the main results.
+    /// How far above the query's typical similarity a meaning-only match
+    /// must be to join the main results.
     pub main: f32,
-    /// A meaning-only match is offered under "See also".
+    /// …to be offered under "See also".
     pub see_also: f32,
-    /// An explicit `idea:` term is satisfied.
+    /// …to satisfy an explicit `idea:` term.
     pub idea: f32,
+    /// Typical similarity of unrelated text, used while the library is too
+    /// small to measure it per query.
+    pub baseline: f32,
+    /// Never count anything below this as related.
+    pub floor: f32,
 }
 
 impl Default for Thresholds {
-    /// Tuned for bge-small-en-v1.5, whose unrelated pairs sit around 0.5.
+    /// Calibrated on bge-small-en-v1.5: unrelated pairs sit around 0.40–0.50
+    /// depending on the query, so matches are judged relative to that.
     fn default() -> Self {
         Self {
-            main: 0.74,
-            see_also: 0.66,
-            idea: 0.66,
+            main: 0.14,
+            see_also: 0.09,
+            idea: 0.10,
+            baseline: 0.45,
+            floor: 0.5,
         }
+    }
+}
+
+impl Thresholds {
+    /// The query's typical similarity: the median of its neighbours.
+    pub fn baseline_for(&self, sims: &[f32]) -> f32 {
+        if sims.len() < 8 {
+            return self.baseline;
+        }
+        let mut v = sims.to_vec();
+        v.sort_by(f32::total_cmp);
+        v[v.len() / 2]
     }
 }
 
@@ -342,6 +363,8 @@ pub mod fake {
                 main: 0.4,
                 see_also: 0.2,
                 idea: 0.25,
+                baseline: 0.0,
+                floor: 0.0,
             }
         }
     }

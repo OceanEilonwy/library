@@ -222,3 +222,61 @@ mod tests {
         assert!((norm - 1.0).abs() < 1e-4);
     }
 }
+
+#[cfg(test)]
+mod calibrate {
+    use super::*;
+
+    /// Prints query/document similarities for tuning thresholds:
+    /// LIBRARY_TEST_MODEL_DIR=… cargo test --release calibrate -- --nocapture
+    #[test]
+    fn calibrate_print_similarities() {
+        let Ok(dir) = std::env::var("LIBRARY_TEST_MODEL_DIR") else {
+            return;
+        };
+        let e = BertEmbedder::load("BAAI/bge-small-en-v1.5", Path::new(&dir)).unwrap();
+        let docs: Vec<String> = [
+            "Moby-Dick. Author: Herman Melville. Book. whaling voyage, obsession, Captain Ahab. 1851",
+            "The Old Man and the Sea. Author: Ernest Hemingway. Book. fisherman, marlin, Gulf Stream. 1952",
+            "A Wizard of Earthsea. Author: Ursula K. Le Guin. Book. young wizard, school of magic, archipelago. 1968",
+            "Pride and Prejudice. Author: Jane Austen. Book. Regency romance, marriage, class. 2003",
+            "La Mer. Artist: Claude Debussy. Music. orchestral impressions of the ocean. 1964",
+            "Low. Artist: David Bowie. Music. ambient, Berlin, electronic. 1977",
+            "My Neighbour Totoro. Director: Hayao Miyazaki. Film. forest spirits, childhood. 1988",
+            "Ponyo. Director: Hayao Miyazaki. Film. goldfish girl, ocean, tsunami. 2008",
+            "MSR Hubba Hubba NX 2. Brand: MSR. Equipment Camping. two person backpacking tent. 2023",
+            "Trangia stove set. Brand: Trangia. Equipment Camping. camp cooker, pans, kettle, meths burner. 2019",
+            "Cordless drill. Brand: Makita. Equipment Tools. drilling, screwdriver, DIY. 2021",
+        ]
+        .map(String::from)
+        .to_vec();
+        let dv = e.embed_documents(&docs).unwrap();
+        for q in [
+            "books about the sea",
+            "ocean",
+            "camping gear",
+            "cooking outdoors",
+            "japanese animation",
+            "electronic music",
+            "love story",
+            "le guin",
+            "hammer",
+            "films for a rainy sunday",
+        ] {
+            let qv = e.embed_query(q).unwrap();
+            let mut sims: Vec<(f32, &str)> = dv
+                .iter()
+                .zip(&docs)
+                .map(|(d, t)| {
+                    (
+                        d.iter().zip(&qv).map(|(a, b)| a * b).sum::<f32>(),
+                        t.split('.').next().unwrap(),
+                    )
+                })
+                .collect();
+            sims.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let line: Vec<String> = sims.iter().map(|(s, t)| format!("{t}={s:.3}")).collect();
+            println!("{q:28} {}", line.join("  "));
+        }
+    }
+}

@@ -29,4 +29,4 @@ enabled = true
 # contact = "https://example.org"
 # Film lookups need a free TMDb "API Read Access Token".
 # tmdb_token = ""
-timeout_secs = 8
+timeout_secs = 15

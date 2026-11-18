@@ -452,7 +452,7 @@ pub fn parse_google_books(json: &Value) -> Vec<Candidate> {
                         .map(|i| s(i, "identifier"))
                 })
             };
-            let mut desc = s(v, "description");
+            let mut desc = strip_html(&s(v, "description"));
             if desc.chars().count() > 600 {
                 desc = desc.chars().take(600).collect::<String>() + "…";
             }
@@ -603,6 +603,78 @@ pub fn parse_upc(json: &Value) -> Vec<Candidate> {
         .collect()
 }
 
+/// Plain text from the bits of HTML some catalogues put in descriptions:
+/// tags dropped (paragraph and line breaks kept), common entities decoded.
+pub fn strip_html(s: &str) -> String {
+    if !s.contains('<') && !s.contains('&') {
+        return s.to_owned();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('<') {
+        out.push_str(&rest[..i]);
+        match rest[i..].find('>') {
+            Some(j) => {
+                let tag = rest[i + 1..i + j]
+                    .trim_start_matches('/')
+                    .to_ascii_lowercase();
+                if tag.starts_with("br")
+                    || tag.starts_with("p") && (tag.len() == 1 || tag.as_bytes()[1] == b' ')
+                {
+                    out.push('\n');
+                }
+                rest = &rest[i + j + 1..];
+            }
+            None => {
+                out.push_str(&rest[i..]);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    let mut text = String::with_capacity(out.len());
+    let mut it = out.as_str();
+    while let Some(i) = it.find('&') {
+        text.push_str(&it[..i]);
+        let tail = &it[i..];
+        let end = tail.find(';').filter(|e| *e <= 8);
+        let decoded = end.and_then(|e| match &tail[1..e] {
+            "amp" => Some('&'),
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "quot" => Some('"'),
+            "apos" => Some('\''),
+            "nbsp" => Some(' '),
+            n if n.starts_with("#x") => u32::from_str_radix(&n[2..], 16)
+                .ok()
+                .and_then(char::from_u32),
+            n if n.starts_with('#') => n[1..].parse().ok().and_then(char::from_u32),
+            _ => None,
+        });
+        match (decoded, end) {
+            (Some(c), Some(e)) => {
+                text.push(c);
+                it = &tail[e + 1..];
+            }
+            _ => {
+                text.push('&');
+                it = &tail[1..];
+            }
+        }
+    }
+    text.push_str(it);
+    // Collapse the blank lines left by markup.
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let mut cleaned = Vec::new();
+    for l in lines {
+        if l.is_empty() && cleaned.last().is_none_or(|p: &&str| p.is_empty()) {
+            continue;
+        }
+        cleaned.push(l);
+    }
+    cleaned.join("\n").trim().to_owned()
+}
+
 /// The description from an Open Library work record, without the
 /// "([source][1])" footnotes and link lists it often carries.
 pub fn parse_ol_description(json: &Value) -> String {
@@ -615,7 +687,7 @@ pub fn parse_ol_description(json: &Value) -> String {
             .to_owned(),
         _ => return String::new(),
     };
-    let mut text = raw.replace("\r\n", "\n");
+    let mut text = strip_html(&raw.replace("\r\n", "\n"));
     for cut in ["\n----", "\n\n**Contains", "([source]", "\n[1]:"] {
         if let Some(i) = text.find(cut) {
             text.truncate(i);
@@ -777,6 +849,23 @@ mod tests {
         assert_eq!(u[0].tags, "Sporting Goods, Camping");
         assert_eq!(u[0].cover_url.as_deref(), Some("https://img/x.jpg"));
         assert_eq!(year_of("19"), None);
+    }
+
+    #[test]
+    fn html_is_stripped_from_descriptions() {
+        assert_eq!(
+            strip_html(
+                "<p><i>Orthodoxy</i> is <a href=\"https://x\">a book</a> by G.&nbsp;K. Chesterton &amp; more.</p><p>Second &#8220;para&#8221;.</p>"
+            ),
+            "Orthodoxy is a book by G. K. Chesterton & more.\n\nSecond \u{201c}para\u{201d}."
+        );
+        assert_eq!(strip_html("No markup, 3 < 4"), "No markup, 3 < 4");
+        assert_eq!(strip_html("Tom &amp Jerry & co"), "Tom &amp Jerry & co");
+        assert_eq!(strip_html("<b>bold</b><br/>next"), "bold\nnext");
+        assert_eq!(
+            parse_ol_description(&json!({"description": "<p>A <b>tale</b>.</p>"})),
+            "A tale."
+        );
     }
 
     #[test]

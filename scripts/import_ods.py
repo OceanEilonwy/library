@@ -11,17 +11,25 @@ search all apply.
     python3 scripts/import_ods.py "Hollingworth Library.ods"            # dry run
     python3 scripts/import_ods.py "Hollingworth Library.ods" --apply    # import
 
+With --descriptions, each book is also looked up online (Open Library,
+then Google Books) and, when the title and author's surname both match,
+its description is filled in. Matching is hit and miss, so it's off by
+default.
+
 Safe to re-run: rows the library flags as already present are skipped
 (use --keep-duplicates to add them anyway). Standard library only.
 """
 
 import argparse
+import difflib
 import getpass
 import html
 import http.cookiejar
 import os
 import re
 import sys
+import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -171,6 +179,53 @@ def to_entry(row, cols):
     return entry
 
 
+# ---------- matching lookup results ----------
+
+def norm(text):
+    text = unicodedata.normalize("NFKD", html.unescape(text)).encode("ascii", "ignore").decode()
+    text = text.lower().replace("’", "'")
+    text = re.sub(r"[^\w\s]", " ", text)
+    words = text.split()
+    if words and words[0] in ("the", "a", "an"):
+        words = words[1:]
+    return " ".join(words)
+
+
+def surnames(creator):
+    """Surnames from 'J. R. R. Tolkien, B. A. Matthews'."""
+    out = []
+    for name in creator.split(","):
+        parts = [w for w in re.split(r"[\s.]+", name) if len(w) > 1]
+        if parts:
+            out.append(norm(parts[-1]))
+    return out
+
+
+def is_match(entry, cand_title, cand_meta):
+    """True if a lookup result is the same book: the main title agrees and
+    (when known) an author's surname appears in the result."""
+    ours = norm(entry["title"].split(":")[0])
+    ours_full = norm(entry["title"])
+    theirs_full = norm(cand_title)
+    theirs = norm(cand_title.split(":")[0])
+    if not ours:
+        return False
+    close = lambda a, b: difflib.SequenceMatcher(None, a, b).ratio() >= 0.9
+    title_ok = (
+        ours == theirs
+        or ours_full == theirs_full
+        or close(ours, theirs)
+        or close(ours_full, theirs_full)
+    )
+    if not title_ok:
+        return False
+    names = surnames(entry["creator"])
+    if not names:
+        return True
+    meta = norm(cand_meta)
+    return any(n and n in meta.split() for n in names)
+
+
 # ---------- talking to the Library ----------
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -241,6 +296,32 @@ class Library:
             sys.exit(f"Couldn't create the field '{name}'.")
         return existing[name.lower()]
 
+    def find_description(self, type_id, entry):
+        """Looks the book up through the library and returns the matching
+        result's description ('' if nothing matched or none was found)."""
+        q = entry["title"].split(":")[0]
+        if entry["creator"]:
+            q += " " + entry["creator"].split(",")[0]
+        # Open Library is slow at times; try again if it didn't answer.
+        for attempt in range(3):
+            _, _, body = self.request(
+                f"/admin/lookup?type={type_id}&q={urllib.parse.quote(q)}", headers={"HX-Request": "true"}
+            )
+            if "Open Library didn" not in body:
+                break
+            time.sleep(3 * (attempt + 1))
+        pattern = r'href="(/admin/items/new\?cand=[0-9a-f]+[^"]*)".*?<strong>([^<]*)</strong>\s*<span class="meta">([^<]*)</span>'
+        for href, title, meta in re.findall(pattern, body, re.S):
+            if not is_match(entry, title, meta):
+                continue
+            # Opening the result asks the library to fetch its description.
+            _, _, form = self.request(html.unescape(href))
+            m = re.search(r'<textarea[^>]*name="description"[^>]*>(.*?)</textarea>', form, re.S)
+            text = html.unescape(m.group(1)).strip() if m else ""
+            if text:
+                return text
+        return ""
+
     def add(self, type_id, entry, field_ids, keep_duplicates):
         fields = [
             ("type_id", type_id),
@@ -251,6 +332,7 @@ class Library:
             ("tags", entry["tags"]),
             ("location", entry["location"]),
             ("notes", entry["notes"]),
+            ("description", entry.get("description", "")),
         ]
         for key, value in entry["fields"].items():
             if value and key in field_ids:
@@ -272,6 +354,7 @@ def main():
     ap.add_argument("--url", default="http://127.0.0.1:8080", help="the Library's address")
     ap.add_argument("--apply", action="store_true", help="actually import (otherwise just show what would happen)")
     ap.add_argument("--keep-duplicates", action="store_true", help="add rows even if they look like existing entries")
+    ap.add_argument("--descriptions", action="store_true", help="also look books up online to fill in descriptions")
     args = ap.parse_args()
 
     rows = read_ods(args.ods)
@@ -309,7 +392,21 @@ def main():
                 field_ids[key] = lib.ensure_field(type_id, CUSTOM_FIELDS[key])
 
     counts = {"added": 0, "duplicate": 0, "error": 0}
-    for e in entries:
+    described = 0
+    for n, e in enumerate(entries, 1):
+        if args.descriptions:
+            print(f"  [{n}/{len(entries)}] looking up {e['title']}…", end="", flush=True)
+            try:
+                e["description"] = lib.find_description(type_id, e)
+            except Exception as err:  # a lookup problem must not stop the import
+                e["description"] = ""
+                print(f" lookup failed ({err})", end="")
+            if e["description"]:
+                described += 1
+                print(" description found")
+            else:
+                print(" no match")
+            time.sleep(1.5)  # be gentle with the free catalogues
         outcome, detail = lib.add(type_id, e, field_ids, args.keep_duplicates)
         counts[outcome] += 1
         if outcome == "duplicate":
@@ -317,6 +414,8 @@ def main():
         elif outcome == "error":
             print(f"  FAILED: {e['title']}: {detail}")
     print(f"\nAdded {counts['added']}, skipped {counts['duplicate']} possible duplicates, {counts['error']} failed.")
+    if args.descriptions:
+        print(f"Descriptions found for {described} of {len(entries)} books.")
     if counts["duplicate"]:
         print("Re-run with --keep-duplicates to add the skipped ones anyway.")
 

@@ -88,7 +88,7 @@ impl Default for LookupConfig {
             enabled: true,
             contact: None,
             tmdb_token: None,
-            timeout_secs: 8,
+            timeout_secs: 15,
             open_library_url: "https://openlibrary.org".into(),
             google_books_url: "https://www.googleapis.com/books/v1".into(),
             musicbrainz_url: "https://musicbrainz.org/ws/2".into(),
@@ -170,7 +170,7 @@ mod tests {
         assert_eq!(cfg.listen.port(), 9000);
         assert!(!cfg.semantic.enabled);
         assert_eq!(cfg.lookup.tmdb_token.as_deref(), Some("abc"));
-        assert_eq!(cfg.lookup.timeout_secs, 8);
+        assert_eq!(cfg.lookup.timeout_secs, 15);
         assert_eq!(cfg.default_title, "Tallow Lane");
     }
 

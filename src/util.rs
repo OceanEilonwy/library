@@ -68,7 +68,10 @@ pub fn normalize_identifier(s: &str) -> String {
 /// True if `s` looks like an ISBN-10/13 or an EAN/UPC barcode.
 pub fn looks_like_code(s: &str) -> bool {
     let trimmed = s.trim();
-    if trimmed.chars().any(|c| c.is_alphabetic() && c != 'x' && c != 'X') {
+    if trimmed
+        .chars()
+        .any(|c| c.is_alphabetic() && c != 'x' && c != 'X')
+    {
         return false;
     }
     matches!(normalize_identifier(trimmed).len(), 8 | 10 | 12 | 13)
@@ -127,7 +130,10 @@ mod tests {
 
     #[test]
     fn normalize_folds_case_punctuation_and_diacritics() {
-        assert_eq!(normalize("  The Hobbit: or, There & Back! "), "the hobbit or there back");
+        assert_eq!(
+            normalize("  The Hobbit: or, There & Back! "),
+            "the hobbit or there back"
+        );
         assert_eq!(normalize("Agnieszka Nowak-Łęcka"), "agnieszka nowak lecka");
         assert_eq!(normalize(""), "");
     }

@@ -3,7 +3,7 @@
 //! go to the existing entry.
 
 use anyhow::Result;
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 
 use crate::util;
 
@@ -43,7 +43,9 @@ pub fn find(conn: &Connection, p: &Probe) -> Result<Vec<Possible>> {
     if code.len() >= 8 {
         // ISBN-10 and ISBN-13 share a 9-digit core; match on it, then confirm.
         let thirteen = util::isbn13(&code);
-        let core = if thirteen.len() == 13 && (thirteen.starts_with("978") || thirteen.starts_with("979")) {
+        let core = if thirteen.len() == 13
+            && (thirteen.starts_with("978") || thirteen.starts_with("979"))
+        {
             thirteen[3..12].to_owned()
         } else {
             code.clone()
@@ -52,7 +54,9 @@ pub fn find(conn: &Connection, p: &Probe) -> Result<Vec<Possible>> {
             "SELECT id, identifier FROM items WHERE identifier <> ''
              AND replace(replace(upper(identifier), '-', ''), ' ', '') LIKE '%' || ?1 || '%'",
         )?;
-        for row in stmt.query_map([core], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))? {
+        for row in stmt.query_map([core], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })? {
             let (id, other) = row?;
             if util::isbn13(&util::normalize_identifier(&other)) == thirteen {
                 ids.push(id);
@@ -99,7 +103,9 @@ pub fn find(conn: &Connection, p: &Probe) -> Result<Vec<Possible>> {
                 r.get::<_, Option<String>>(7)?,
             ))
         });
-        let Ok((id, title, creator, year, publisher, format, identifier, location)) = row else { continue };
+        let Ok((id, title, creator, year, publisher, format, identifier, location)) = row else {
+            continue;
+        };
         let same_code = code.len() >= 8 && {
             let other = util::normalize_identifier(&identifier);
             other == code || util::isbn13(&other) == util::isbn13(&code)
@@ -115,13 +121,19 @@ pub fn find(conn: &Connection, p: &Probe) -> Result<Vec<Possible>> {
             "same ISBN / barcode".to_owned()
         } else if t_sim >= 0.85 && creator_match {
             let mut diffs = Vec::new();
-            if !p.publisher.trim().is_empty() && util::normalize(p.publisher) != util::normalize(&publisher) && !publisher.is_empty() {
+            if !p.publisher.trim().is_empty()
+                && util::normalize(p.publisher) != util::normalize(&publisher)
+                && !publisher.is_empty()
+            {
                 diffs.push("publisher");
             }
             if p.year.is_some() && year.is_some() && p.year != year {
                 diffs.push("year");
             }
-            if !p.format.trim().is_empty() && !format.is_empty() && util::normalize(p.format) != util::normalize(&format) {
+            if !p.format.trim().is_empty()
+                && !format.is_empty()
+                && util::normalize(p.format) != util::normalize(&format)
+            {
                 diffs.push("format");
             }
             let base = if creator_key.is_empty() || other_creator.is_empty() {
@@ -169,26 +181,52 @@ mod tests {
     use crate::db::testing::temp_db;
 
     fn probe<'a>(title: &'a str, creator: &'a str) -> Probe<'a> {
-        Probe { title, creator, identifier: "", publisher: "", year: None, format: "", exclude: None }
+        Probe {
+            title,
+            creator,
+            identifier: "",
+            publisher: "",
+            year: None,
+            format: "",
+            exclude: None,
+        }
     }
 
     #[test]
     fn finds_same_title_and_explains_differences() {
         let (db, _d) = temp_db();
         db.write_blocking(|c| {
-            let id = create(c, &ItemInput {
-                type_id: book(c), title: "The Hobbit".into(), creator: "J. R. R. Tolkien".into(),
-                publisher: "Unwin".into(), year: "1966".into(), location: "Shed > Books Box 1".into(),
-                ..Default::default()
-            })?;
-            create(c, &ItemInput { type_id: book(c), title: "The Hobbit Companion".into(), creator: "David Day".into(), ..Default::default() })?;
+            let id = create(
+                c,
+                &ItemInput {
+                    type_id: book(c),
+                    title: "The Hobbit".into(),
+                    creator: "J. R. R. Tolkien".into(),
+                    publisher: "Unwin".into(),
+                    year: "1966".into(),
+                    location: "Shed > Books Box 1".into(),
+                    ..Default::default()
+                },
+            )?;
+            create(
+                c,
+                &ItemInput {
+                    type_id: book(c),
+                    title: "The Hobbit Companion".into(),
+                    creator: "David Day".into(),
+                    ..Default::default()
+                },
+            )?;
             let mut p = probe("Hobbit", "Tolkien");
             p.publisher = "HarperCollins";
             p.year = Some(1995);
             let found = find(c, &p)?;
             assert_eq!(found.len(), 1, "{found:?}");
             assert_eq!(found[0].id, id);
-            assert_eq!(found[0].why, "same title & creator, different publisher and year");
+            assert_eq!(
+                found[0].why,
+                "same title & creator, different publisher and year"
+            );
             assert_eq!(found[0].location.as_deref(), Some("Shed › Books Box 1"));
             // Editing the item itself is not a duplicate of itself.
             p.exclude = Some(id);
@@ -202,7 +240,15 @@ mod tests {
     fn same_isbn_in_either_form() {
         let (db, _d) = temp_db();
         db.write_blocking(|c| {
-            create(c, &ItemInput { type_id: book(c), title: "Different Title".into(), identifier: "0-261-10295-8".into(), ..Default::default() })?;
+            create(
+                c,
+                &ItemInput {
+                    type_id: book(c),
+                    title: "Different Title".into(),
+                    identifier: "0-261-10295-8".into(),
+                    ..Default::default()
+                },
+            )?;
             let mut p = probe("Whatever", "");
             p.identifier = "9780261102958";
             let found = find(c, &p)?;
@@ -218,7 +264,15 @@ mod tests {
     fn different_creator_is_not_a_duplicate() {
         let (db, _d) = temp_db();
         db.write_blocking(|c| {
-            create(c, &ItemInput { type_id: book(c), title: "Blue".into(), creator: "Joni Mitchell".into(), ..Default::default() })?;
+            create(
+                c,
+                &ItemInput {
+                    type_id: book(c),
+                    title: "Blue".into(),
+                    creator: "Joni Mitchell".into(),
+                    ..Default::default()
+                },
+            )?;
             assert!(find(c, &probe("Blue", "Maggie Nelson"))?.is_empty());
             assert_eq!(find(c, &probe("Blue", ""))?.len(), 1);
             assert!(find(c, &probe("", ""))?.is_empty());

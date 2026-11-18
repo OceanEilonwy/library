@@ -51,6 +51,7 @@ pub fn get(conn: &Connection, id: i64) -> Result<Option<Location>> {
         .optional()?)
 }
 
+#[cfg(test)]
 pub fn children(conn: &Connection, parent: Option<i64>) -> Result<Vec<Location>> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, parent_id, name, path FROM locations
@@ -87,7 +88,11 @@ pub fn ensure_path(conn: &Connection, input: &str) -> Result<Option<i64>> {
                 id
             }
             None => {
-                path = if path.is_empty() { seg.clone() } else { format!("{path}{SEP}{seg}") };
+                path = if path.is_empty() {
+                    seg.clone()
+                } else {
+                    format!("{path}{SEP}{seg}")
+                };
                 conn.execute(
                     "INSERT INTO locations (parent_id, name, path) VALUES (?1, ?2, ?3)",
                     params![parent, seg, path],
@@ -107,7 +112,9 @@ pub fn rename(conn: &Connection, id: i64, new_name: &str) -> Result<()> {
     if name.is_empty() {
         bail!("A place needs a name.");
     }
-    let Some(loc) = get(conn, id)? else { bail!("No such place.") };
+    let Some(loc) = get(conn, id)? else {
+        bail!("No such place.")
+    };
     let clash: bool = conn.query_row(
         "SELECT count(*) > 0 FROM locations
          WHERE parent_id IS ?1 AND name = ?2 COLLATE NOCASE AND id <> ?3",
@@ -121,7 +128,10 @@ pub fn rename(conn: &Connection, id: i64, new_name: &str) -> Result<()> {
         Some(parent) => format!("{}{SEP}{name}", parent.path),
         None => name.clone(),
     };
-    conn.execute("UPDATE locations SET name = ?1 WHERE id = ?2", params![name, id])?;
+    conn.execute(
+        "UPDATE locations SET name = ?1 WHERE id = ?2",
+        params![name, id],
+    )?;
     repath_subtree(conn, id, &loc.path, &new_path)?;
     Ok(())
 }
@@ -147,7 +157,9 @@ pub fn delete(conn: &Connection, id: i64) -> Result<()> {
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     if kids > 0 || items > 0 {
-        bail!("Only empty places can be removed: this one holds {items} item(s) and {kids} place(s).");
+        bail!(
+            "Only empty places can be removed: this one holds {items} item(s) and {kids} place(s)."
+        );
     }
     conn.execute("DELETE FROM locations WHERE id = ?1", [id])?;
     Ok(())
@@ -172,8 +184,14 @@ mod tests {
 
     #[test]
     fn split_accepts_several_separators() {
-        assert_eq!(split_path("Shed > Books Box 1"), vec!["Shed", "Books Box 1"]);
-        assert_eq!(split_path("Lounge › CD rack / Row 2"), vec!["Lounge", "CD rack", "Row 2"]);
+        assert_eq!(
+            split_path("Shed > Books Box 1"),
+            vec!["Shed", "Books Box 1"]
+        );
+        assert_eq!(
+            split_path("Lounge › CD rack / Row 2"),
+            vec!["Lounge", "CD rack", "Row 2"]
+        );
         assert!(split_path("  › ").is_empty());
     }
 
@@ -185,7 +203,10 @@ mod tests {
             let b = ensure_path(c, "shed › books box 1")?.unwrap();
             assert_eq!(a, b);
             let crate1 = ensure_path(c, "Shed > Camping shelf > Crate 1")?.unwrap();
-            assert_eq!(get(c, crate1)?.unwrap().path, "Shed › Camping shelf › Crate 1");
+            assert_eq!(
+                get(c, crate1)?.unwrap().path,
+                "Shed › Camping shelf › Crate 1"
+            );
             assert_eq!(list(c)?.len(), 4);
             assert_eq!(ensure_path(c, "")?, None);
             assert_eq!(children(c, None)?.len(), 1);
@@ -202,9 +223,15 @@ mod tests {
             ensure_path(c, "Lounge > Bookcase 10")?;
             let bc = get(c, get(c, deep)?.unwrap().parent_id.unwrap())?.unwrap();
             rename(c, bc.id, "Oak bookcase")?;
-            assert_eq!(get(c, deep)?.unwrap().path, "Lounge › Oak bookcase › Shelf 2");
+            assert_eq!(
+                get(c, deep)?.unwrap().path,
+                "Lounge › Oak bookcase › Shelf 2"
+            );
             let paths: Vec<String> = list(c)?.into_iter().map(|l| l.path).collect();
-            assert!(paths.contains(&"Lounge › Bookcase 10".to_owned()), "sibling with shared prefix untouched");
+            assert!(
+                paths.contains(&"Lounge › Bookcase 10".to_owned()),
+                "sibling with shared prefix untouched"
+            );
             assert!(rename(c, bc.id, "bookcase 10").is_err());
             Ok(())
         })

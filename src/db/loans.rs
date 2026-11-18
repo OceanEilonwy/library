@@ -1,7 +1,7 @@
 //! Lending: anyone can lend an item out by giving a name; the date is
 //! recorded automatically. An item has at most one active loan.
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use rusqlite::{Connection, ErrorCode, params};
 
 use super::now;
@@ -40,8 +40,11 @@ pub fn lend(conn: &Connection, item_id: i64, borrower: &str) -> Result<Loan> {
     if borrower.is_empty() {
         return Err(LoanError::EmptyName.into());
     }
-    let exists: bool =
-        conn.query_row("SELECT count(*) > 0 FROM items WHERE id = ?1", [item_id], |r| r.get(0))?;
+    let exists: bool = conn.query_row(
+        "SELECT count(*) > 0 FROM items WHERE id = ?1",
+        [item_id],
+        |r| r.get(0),
+    )?;
     if !exists {
         return Err(LoanError::NoSuchItem.into());
     }
@@ -52,7 +55,9 @@ pub fn lend(conn: &Connection, item_id: i64, borrower: &str) -> Result<Loan> {
     ) {
         Ok(_) => {}
         Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == ErrorCode::ConstraintViolation => {
-            let who = active(conn, item_id)?.map(|l| l.borrower).unwrap_or_default();
+            let who = active(conn, item_id)?
+                .map(|l| l.borrower)
+                .unwrap_or_default();
             return Err(LoanError::AlreadyOut(who).into());
         }
         Err(e) => return Err(e.into()),
@@ -77,7 +82,9 @@ pub fn mark_returned(conn: &Connection, item_id: i64) -> Result<bool> {
 }
 
 pub fn active(conn: &Connection, item_id: i64) -> Result<Option<Loan>> {
-    Ok(history(conn, item_id)?.into_iter().find(|l| l.returned_at.is_none()))
+    Ok(history(conn, item_id)?
+        .into_iter()
+        .find(|l| l.returned_at.is_none()))
 }
 
 pub fn history(conn: &Connection, item_id: i64) -> Result<Vec<Loan>> {
@@ -97,14 +104,6 @@ pub fn history(conn: &Connection, item_id: i64) -> Result<Vec<Loan>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Rejects obviously silly names before they reach the database.
-pub fn check_name(name: &str) -> Result<()> {
-    if util::clean(name, 80).is_empty() {
-        bail!(LoanError::EmptyName);
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,7 +118,10 @@ mod tests {
             let loan = lend(c, id, "  Kasia ")?;
             assert_eq!(loan.borrower, "Kasia");
             let err = lend(c, id, "Tom").unwrap_err();
-            assert_eq!(err.downcast_ref::<LoanError>(), Some(&LoanError::AlreadyOut("Kasia".into())));
+            assert_eq!(
+                err.downcast_ref::<LoanError>(),
+                Some(&LoanError::AlreadyOut("Kasia".into()))
+            );
             assert!(mark_returned(c, id)?);
             assert!(!mark_returned(c, id)?, "second return is a no-op");
             lend(c, id, "Tom")?;
@@ -136,9 +138,16 @@ mod tests {
         let (db, _d) = temp_db();
         db.write_blocking(|c| {
             let id = items::create(c, &input(c, "Low", ""))?;
-            assert_eq!(lend(c, id, "   ").unwrap_err().downcast_ref::<LoanError>(), Some(&LoanError::EmptyName));
-            assert_eq!(lend(c, 9999, "Sam").unwrap_err().downcast_ref::<LoanError>(), Some(&LoanError::NoSuchItem));
-            assert!(check_name("").is_err());
+            assert_eq!(
+                lend(c, id, "   ").unwrap_err().downcast_ref::<LoanError>(),
+                Some(&LoanError::EmptyName)
+            );
+            assert_eq!(
+                lend(c, 9999, "Sam")
+                    .unwrap_err()
+                    .downcast_ref::<LoanError>(),
+                Some(&LoanError::NoSuchItem)
+            );
             Ok(())
         })
         .unwrap();

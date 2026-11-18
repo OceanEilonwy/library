@@ -32,7 +32,10 @@ pub struct FormView<'a> {
 
 pub fn item_form_page(ctx: &Ctx, v: &FormView) -> Markup {
     let (title, sub) = match v.mode {
-        Mode::New => ("A new entry", "Look it up first, or fill in the details yourself."),
+        Mode::New => (
+            "A new entry",
+            "Look it up first, or fill in the details yourself.",
+        ),
         Mode::Edit(_) => ("Edit entry", "Changes are saved when you press Save."),
     };
     let body = html! {
@@ -97,13 +100,20 @@ fn lookup_sources(l: Lookup) -> &'static str {
         Lookup::Book => "From Open Library and Google Books — or scan the barcode on the back.",
         Lookup::Music => "From MusicBrainz — or scan the barcode.",
         Lookup::Film => "From TMDb — or scan the barcode.",
-        Lookup::Product => "Barcode product lookup — kit often has no match, and that's fine: type it in.",
+        Lookup::Product => {
+            "Barcode product lookup — kit often has no match, and that's fine: type it in."
+        }
         Lookup::None => "No online source for this type: fill in the details yourself.",
     }
 }
 
 /// The list of lookup matches (inline on wide screens).
-pub fn candidates(cands: &[(String, Candidate)], notes: &[String], q: &str, type_id: i64) -> Markup {
+pub fn candidates(
+    cands: &[(String, Candidate)],
+    notes: &[String],
+    q: &str,
+    type_id: i64,
+) -> Markup {
     html! {
         @if cands.is_empty() && !q.trim().is_empty() {
             p.notice { "No matches. Fill in the details yourself — that works just as well." }
@@ -130,7 +140,13 @@ pub fn candidates(cands: &[(String, Candidate)], notes: &[String], q: &str, type
 }
 
 /// Full-page lookup results (phones), with the search pinned at the top.
-pub fn lookup_page(ctx: &Ctx, t: &MediaType, q: &str, cands: &[(String, Candidate)], notes: &[String]) -> Markup {
+pub fn lookup_page(
+    ctx: &Ctx,
+    t: &MediaType,
+    q: &str,
+    cands: &[(String, Candidate)],
+    notes: &[String],
+) -> Markup {
     page(
         ctx,
         "Look it up",
@@ -243,8 +259,21 @@ fn details_form(ctx: &Ctx, v: &FormView) -> Markup {
 
 /// The parts of the form that depend on the type: the creator label and
 /// the librarian's own fields.
-pub fn type_fields(t: &MediaType, fields: &[FieldDef], input: &ItemInput, errors: &Invalid, editing: bool) -> Markup {
-    let value_of = |id: i64| input.fields.iter().find(|(f, _)| *f == id).map(|(_, v)| v.as_str()).unwrap_or("");
+pub fn type_fields(
+    t: &MediaType,
+    fields: &[FieldDef],
+    input: &ItemInput,
+    errors: &Invalid,
+    editing: bool,
+) -> Markup {
+    let value_of = |id: i64| {
+        input
+            .fields
+            .iter()
+            .find(|(f, _)| *f == id)
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("")
+    };
     html! {
         div #type-fields.full.grid-fields {
             div.field {

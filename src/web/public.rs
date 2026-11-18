@@ -48,9 +48,19 @@ pub struct SearchParams {
 
 /// Advanced-form fields, if the request came from that form.
 fn advanced_from(pairs: &[(String, String)]) -> Option<Advanced> {
-    let get = |k: &str| pairs.iter().rev().find(|(n, _)| n == k).map(|(_, v)| v.trim().to_owned()).unwrap_or_default();
+    let get = |k: &str| {
+        pairs
+            .iter()
+            .rev()
+            .find(|(n, _)| n == k)
+            .map(|(_, v)| v.trim().to_owned())
+            .unwrap_or_default()
+    };
     let keys = ["title", "creator", "from", "to", "types", "loan", "idea"];
-    if !pairs.iter().any(|(k, v)| keys.contains(&k.as_str()) && !v.trim().is_empty()) {
+    if !pairs
+        .iter()
+        .any(|(k, v)| keys.contains(&k.as_str()) && !v.trim().is_empty())
+    {
         return None;
     }
     Some(Advanced {
@@ -58,7 +68,11 @@ fn advanced_from(pairs: &[(String, String)]) -> Option<Advanced> {
         creator: get("creator"),
         year_from: get("from"),
         year_to: get("to"),
-        types: pairs.iter().filter(|(k, _)| k == "types").map(|(_, v)| v.clone()).collect(),
+        types: pairs
+            .iter()
+            .filter(|(k, _)| k == "types")
+            .map(|(_, v)| v.clone())
+            .collect(),
         loan: get("loan"),
         idea: get("idea"),
         words: String::new(),
@@ -74,17 +88,29 @@ pub async fn search(
     // The advanced form submits its fields: turn them into one query and
     // redirect, so the address bar shows the query the fields wrote.
     if let Some(adv) = advanced_from(&raw) {
-        let typed = raw.iter().rev().find(|(k, _)| k == "q").map(|(_, v)| v.trim().to_owned()).unwrap_or_default();
+        let typed = raw
+            .iter()
+            .rev()
+            .find(|(k, _)| k == "q")
+            .map(|(_, v)| v.trim().to_owned())
+            .unwrap_or_default();
         let composed = adv.to_query();
         let q = if typed.is_empty() { composed } else { typed };
-        return Ok(see_other(&format!("/search?q={}", crate::views::urlencode(&q))));
+        return Ok(see_other(&format!(
+            "/search?q={}",
+            crate::views::urlencode(&q)
+        )));
     }
     let offset = p.offset.parse::<usize>().unwrap_or(0).min(10_000);
     let state = SearchState {
         q: p.q.trim().chars().take(500).collect(),
         type_slug: p.type_slug.clone(),
         place: p.place.parse().ok(),
-        decade: p.decade.parse().ok().filter(|d: &i64| d % 10 == 0 && (0..=3000).contains(d)),
+        decade: p
+            .decade
+            .parse()
+            .ok()
+            .filter(|d: &i64| d % 10 == 0 && (0..=3000).contains(d)),
         availability: match p.avail.as_str() {
             "in" => Availability::OnShelf,
             "out" => Availability::OnLoan,
@@ -112,15 +138,24 @@ pub async fn search(
     }
     let choices = st.db.read(filter_choices).await?;
     if viewer.htmx && viewer.hx_target.ends_with("#results") {
-        return Ok(html(pv::results_section(&ctx, &state, &choices, &results, offset)));
+        return Ok(html(pv::results_section(
+            &ctx, &state, &choices, &results, offset,
+        )));
     }
-    Ok(html(pv::results_page(&ctx, &state, &choices, &results, offset)))
+    Ok(html(pv::results_page(
+        &ctx, &state, &choices, &results, offset,
+    )))
 }
 
 fn filter_choices(c: &rusqlite::Connection) -> anyhow::Result<FilterChoices> {
-    let places = locations::list(c)?.into_iter().filter(|l| l.path.matches(" › ").count() < 2).collect();
+    let places = locations::list(c)?
+        .into_iter()
+        .filter(|l| l.path.matches(" › ").count() < 2)
+        .collect();
     let decades: Vec<i64> = c
-        .prepare_cached("SELECT DISTINCT (year / 10) * 10 FROM items WHERE year IS NOT NULL ORDER BY 1")?
+        .prepare_cached(
+            "SELECT DISTINCT (year / 10) * 10 FROM items WHERE year IS NOT NULL ORDER BY 1",
+        )?
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     Ok(FilterChoices { places, decades })
@@ -139,7 +174,9 @@ pub async fn advanced(State(st): State<AppState>, viewer: Viewer, Query(p): Quer
 
 /// Re-renders the "Query, as text" box from the advanced fields.
 pub async fn advanced_preview(Query(raw): Query<Vec<(String, String)>>) -> Res {
-    let q = advanced_from(&raw).map(|a| a.to_query()).unwrap_or_default();
+    let q = advanced_from(&raw)
+        .map(|a| a.to_query())
+        .unwrap_or_default();
     Ok(html(pv::query_preview(&q)))
 }
 
@@ -149,11 +186,18 @@ pub struct ItemParams {
     saved: Option<String>,
 }
 
-pub async fn item(State(st): State<AppState>, viewer: Viewer, Path(id): Path<i64>, Query(p): Query<ItemParams>) -> Res {
+pub async fn item(
+    State(st): State<AppState>,
+    viewer: Viewer,
+    Path(id): Path<i64>,
+    Query(p): Query<ItemParams>,
+) -> Res {
     let data = st
         .db
         .read(move |c| {
-            let Some(item) = items::get(c, id)? else { return Ok(None) };
+            let Some(item) = items::get(c, id)? else {
+                return Ok(None);
+            };
             let fields = items::field_values(c, id)?;
             let photos = photos::for_item(c, id)?;
             let loans = loans::history(c, id)?;
@@ -173,7 +217,9 @@ pub async fn item(State(st): State<AppState>, viewer: Viewer, Path(id): Path<i64
             Ok(Some((item, fields, photos, loans, similar)))
         })
         .await?;
-    let Some((item, fields, photos, loans, similar)) = data else { return Err(AppError::NotFound) };
+    let Some((item, fields, photos, loans, similar)) = data else {
+        return Err(AppError::NotFound);
+    };
     let ctx = st.ctx(&viewer).await?;
     let flash = p.saved.as_deref().map(|s| match s {
         "photos" => "Photos added.",
@@ -183,7 +229,13 @@ pub async fn item(State(st): State<AppState>, viewer: Viewer, Path(id): Path<i64
     });
     Ok(html(pv::item_page(
         &ctx,
-        &ItemView { item: &item, fields: &fields, photos: &photos, loans: &loans, similar: &similar },
+        &ItemView {
+            item: &item,
+            fields: &fields,
+            photos: &photos,
+            loans: &loans,
+            similar: &similar,
+        },
         flash,
     )))
 }
@@ -197,22 +249,47 @@ pub struct RowParams {
 }
 
 async fn summary(st: &AppState, id: i64) -> Res<items::Summary> {
-    st.db.read(move |c| items::summary(c, id)).await?.ok_or(AppError::NotFound)
+    st.db
+        .read(move |c| items::summary(c, id))
+        .await?
+        .ok_or(AppError::NotFound)
 }
 
 /// A result row, closed (used by "Cancel").
-pub async fn item_row(State(st): State<AppState>, viewer: Viewer, Path(id): Path<i64>, Query(p): Query<RowParams>) -> Res {
+pub async fn item_row(
+    State(st): State<AppState>,
+    viewer: Viewer,
+    Path(id): Path<i64>,
+    Query(p): Query<RowParams>,
+) -> Res {
     let s = summary(&st, id).await?;
     let ctx = st.ctx(&viewer).await?;
-    Ok(html(pv::result_row(&ctx, &s, None, p.n.unwrap_or(1), LoanUi::Closed)))
+    Ok(html(pv::result_row(
+        &ctx,
+        &s,
+        None,
+        p.n.unwrap_or(1),
+        LoanUi::Closed,
+    )))
 }
 
 /// The lending form: inline in a result row (htmx) or as a page.
-pub async fn loan_form(State(st): State<AppState>, viewer: Viewer, Path(id): Path<i64>, Query(p): Query<RowParams>) -> Res {
+pub async fn loan_form(
+    State(st): State<AppState>,
+    viewer: Viewer,
+    Path(id): Path<i64>,
+    Query(p): Query<RowParams>,
+) -> Res {
     let s = summary(&st, id).await?;
     let ctx = st.ctx(&viewer).await?;
     if viewer.htmx {
-        Ok(html(pv::result_row(&ctx, &s, None, p.n.unwrap_or(1), LoanUi::Open(None))))
+        Ok(html(pv::result_row(
+            &ctx,
+            &s,
+            None,
+            p.n.unwrap_or(1),
+            LoanUi::Open(None),
+        )))
     } else {
         Ok(html(pv::loan_page(&ctx, &s, None)))
     }
@@ -238,17 +315,31 @@ pub async fn lend(
     respond_after_loan(&st, &viewer, id, &p, error).await
 }
 
-pub async fn give_back(State(st): State<AppState>, viewer: Viewer, Path(id): Path<i64>, Query(p): Query<RowParams>) -> Res {
+pub async fn give_back(
+    State(st): State<AppState>,
+    viewer: Viewer,
+    Path(id): Path<i64>,
+    Query(p): Query<RowParams>,
+) -> Res {
     st.db.write(move |c| loans::mark_returned(c, id)).await?;
     respond_after_loan(&st, &viewer, id, &p, None).await
 }
 
-async fn respond_after_loan(st: &AppState, viewer: &Viewer, id: i64, p: &RowParams, error: Option<String>) -> Res {
+async fn respond_after_loan(
+    st: &AppState,
+    viewer: &Viewer,
+    id: i64,
+    p: &RowParams,
+    error: Option<String>,
+) -> Res {
     if !viewer.htmx {
         if let Some(e) = error {
             let s = summary(st, id).await?;
             let ctx = st.ctx(viewer).await?;
-            return Ok(html_status(StatusCode::UNPROCESSABLE_ENTITY, pv::loan_page(&ctx, &s, Some(&e))));
+            return Ok(html_status(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                pv::loan_page(&ctx, &s, Some(&e)),
+            ));
         }
         return Ok(see_other(&format!("/items/{id}")));
     }
@@ -278,7 +369,11 @@ pub struct NextParam {
     next: String,
 }
 
-pub async fn unlock_page(State(st): State<AppState>, viewer: Viewer, Query(p): Query<NextParam>) -> Res {
+pub async fn unlock_page(
+    State(st): State<AppState>,
+    viewer: Viewer,
+    Query(p): Query<NextParam>,
+) -> Res {
     let ctx = st.ctx(&viewer).await?;
     let next = auth::safe_next(&p.next);
     if viewer.admin {
@@ -287,7 +382,12 @@ pub async fn unlock_page(State(st): State<AppState>, viewer: Viewer, Query(p): Q
     Ok(html(pv::unlock_page(&ctx, &next, None)))
 }
 
-pub async fn unlock(State(st): State<AppState>, viewer: Viewer, headers: HeaderMap, form: Fields) -> Res {
+pub async fn unlock(
+    State(st): State<AppState>,
+    viewer: Viewer,
+    headers: HeaderMap,
+    form: Fields,
+) -> Res {
     let next = auth::safe_next(form.get("next"));
     let password = form.get("password").to_owned();
     let a = st.auth.clone();
@@ -299,14 +399,25 @@ pub async fn unlock(State(st): State<AppState>, viewer: Viewer, headers: HeaderM
             let mut r = see_other(&next);
             r.headers_mut().insert(
                 header::SET_COOKIE,
-                auth::session_cookie(&cookie, super::is_https(&headers)).parse().expect("valid cookie header"),
+                auth::session_cookie(&cookie, super::is_https(&headers))
+                    .parse()
+                    .expect("valid cookie header"),
             );
             return Ok(r);
         }
         Login::Wrong => ("That isn't the admin password.", StatusCode::UNAUTHORIZED),
-        Login::TooMany => ("Too many wrong attempts. Wait ten minutes and try again.", StatusCode::TOO_MANY_REQUESTS),
-        Login::NotConfigured => ("No admin password has been set up on the server yet.", StatusCode::UNAUTHORIZED),
+        Login::TooMany => (
+            "Too many wrong attempts. Wait ten minutes and try again.",
+            StatusCode::TOO_MANY_REQUESTS,
+        ),
+        Login::NotConfigured => (
+            "No admin password has been set up on the server yet.",
+            StatusCode::UNAUTHORIZED,
+        ),
     };
     let ctx = st.ctx(&viewer).await?;
-    Ok(html_status(status, pv::unlock_page(&ctx, &next, Some(error))))
+    Ok(html_status(
+        status,
+        pv::unlock_page(&ctx, &next, Some(error)),
+    ))
 }

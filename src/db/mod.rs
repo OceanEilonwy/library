@@ -50,8 +50,7 @@ impl Db {
     pub fn open(path: &Path) -> Result<Self> {
         register_vec_extension();
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("creating {}", dir.display()))?;
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
         let mut writer = open_connection(path, false)?;
         migrate(&mut writer)?;
@@ -62,10 +61,6 @@ impl Db {
                 readers: Mutex::new(Vec::new()),
             }),
         })
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.inner.path
     }
 
     /// Runs `f` on a read-only connection on a blocking thread.
@@ -128,7 +123,9 @@ impl Inner {
 
 fn open_connection(path: &Path, read_only: bool) -> Result<Connection> {
     let flags = if read_only {
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_URI
     } else {
         OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_CREATE
@@ -190,7 +187,11 @@ pub fn ensure_vector_table(conn: &mut Connection, model: &str, dim: usize) -> Re
     tx.execute("UPDATE items SET embed_hash = NULL", [])?;
     settings::set(&tx, "vector_model", &wanted)?;
     tx.commit()?;
-    tracing::info!(model, dim, "vector table (re)created; items queued for embedding");
+    tracing::info!(
+        model,
+        dim,
+        "vector table (re)created; items queued for embedding"
+    );
     Ok(())
 }
 
@@ -232,7 +233,9 @@ mod tests {
     fn schema_applies_and_seeds_types() {
         let (db, _dir) = temp_db();
         let n: i64 = db
-            .read_blocking(|c| Ok(c.query_row("SELECT count(*) FROM media_types", [], |r| r.get(0))?))
+            .read_blocking(|c| {
+                Ok(c.query_row("SELECT count(*) FROM media_types", [], |r| r.get(0))?)
+            })
             .unwrap();
         assert_eq!(n, 6);
     }

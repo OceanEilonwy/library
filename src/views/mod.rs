@@ -4,7 +4,7 @@
 pub mod admin;
 pub mod public;
 
-use maud::{DOCTYPE, Markup, PreEscaped, html};
+use maud::{DOCTYPE, Markup, html};
 
 use crate::db::settings::Branding;
 use crate::db::types::MediaType;
@@ -171,26 +171,13 @@ fn compact_head(ctx: &Ctx, search: Option<&String>) -> Markup {
     }
 }
 
-/// A plain message page (errors, confirmations).
-pub fn message(ctx: &Ctx, title: &str, text: &str) -> Markup {
-    page(
-        ctx,
-        title,
-        Header::Plain,
-        html! {
-            div.empty {
-                p { (text) }
-                a.btn href="/" { "Back to the catalogue" }
-            }
-        },
-    )
-}
-
 pub fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             b' ' => out.push('+'),
             _ => out.push_str(&format!("%{b:02X}")),
         }
@@ -222,11 +209,6 @@ pub fn date_short(ts: i64) -> String {
 /// Ordinal-free label for a decade filter value.
 pub fn decade_label(d: i64) -> String {
     format!("the {d}s")
-}
-
-/// Raw HTML that is known to be safe (static strings only).
-pub fn raw(s: &'static str) -> PreEscaped<&'static str> {
-    PreEscaped(s)
 }
 
 #[cfg(test)]

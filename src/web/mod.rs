@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, FromRequest, FromRequestParts, Multipart, Path, Request, State};
+use axum::extract::{
+    DefaultBodyLimit, FromRequest, FromRequestParts, Multipart, Path, Request, State,
+};
 use axum::http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use axum::http::{Method, StatusCode, request::Parts};
 use axum::middleware::{self, Next};
@@ -74,7 +76,10 @@ pub fn router(state: AppState) -> Router {
         .route("/advanced/preview", get(public::advanced_preview))
         .route("/items/{id}", get(public::item))
         .route("/items/{id}/row", get(public::item_row))
-        .route("/items/{id}/loan", get(public::loan_form).post(public::lend))
+        .route(
+            "/items/{id}/loan",
+            get(public::loan_form).post(public::lend),
+        )
         .route("/items/{id}/return", post(public::give_back))
         .route("/unlock", get(public::unlock_page).post(public::unlock))
         .route("/photos/{file}", get(photo))
@@ -108,12 +113,18 @@ impl From<anyhow::Error> for AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, msg) = match self {
-            AppError::NotFound => (StatusCode::NOT_FOUND, "That page isn't on the shelves.".to_owned()),
+            AppError::NotFound => (
+                StatusCode::NOT_FOUND,
+                "That page isn't on the shelves.".to_owned(),
+            ),
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             AppError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
             AppError::Internal(e) => {
                 tracing::error!(error = ?e, "request failed");
-                (StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong. Please try again.".to_owned())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Something went wrong. Please try again.".to_owned(),
+                )
             }
         };
         let body = maud::html! {
@@ -160,7 +171,14 @@ pub struct Viewer {
 impl FromRequestParts<AppState> for Viewer {
     type Rejection = AppError;
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, AppError> {
-        let header = |n: &str| parts.headers.get(n).and_then(|v| v.to_str().ok()).unwrap_or("").to_owned();
+        let header = |n: &str| {
+            parts
+                .headers
+                .get(n)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned()
+        };
         let htmx = header("hx-request") == "true";
         let here = if htmx {
             // For fragments, "here" is the page the browser is on.
@@ -169,7 +187,11 @@ impl FromRequestParts<AppState> for Viewer {
                 .and_then(|(_, rest)| rest.find('/').map(|i| rest[i..].to_owned()))
                 .unwrap_or_else(|| "/".to_owned())
         } else {
-            parts.uri.path_and_query().map(|p| p.as_str().to_owned()).unwrap_or_else(|| "/".into())
+            parts
+                .uri
+                .path_and_query()
+                .map(|p| p.as_str().to_owned())
+                .unwrap_or_else(|| "/".into())
         };
         Ok(Viewer {
             admin: state.auth.is_admin(&parts.headers),
@@ -186,7 +208,9 @@ pub struct Admin(pub Viewer);
 impl FromRequestParts<AppState> for Admin {
     type Rejection = Response;
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Response> {
-        let viewer = Viewer::from_request_parts(parts, state).await.map_err(IntoResponse::into_response)?;
+        let viewer = Viewer::from_request_parts(parts, state)
+            .await
+            .map_err(IntoResponse::into_response)?;
         if viewer.admin {
             return Ok(Admin(viewer));
         }
@@ -197,11 +221,15 @@ impl FromRequestParts<AppState> for Admin {
             let mut r = StatusCode::FORBIDDEN.into_response();
             r.headers_mut().insert(
                 HeaderName::from_static("hx-redirect"),
-                HeaderValue::from_str(&format!("/unlock?next={next}")).unwrap_or(HeaderValue::from_static("/unlock")),
+                HeaderValue::from_str(&format!("/unlock?next={next}"))
+                    .unwrap_or(HeaderValue::from_static("/unlock")),
             );
             Err(r)
         } else {
-            Err(AppError::Forbidden("Unlock editing with the admin password first.".into()).into_response())
+            Err(
+                AppError::Forbidden("Unlock editing with the admin password first.".into())
+                    .into_response(),
+            )
         }
     }
 }
@@ -222,20 +250,18 @@ pub struct Fields {
 
 impl Fields {
     pub fn get(&self, key: &str) -> &str {
-        self.pairs.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.as_str()).unwrap_or("")
-    }
-    pub fn all(&self, key: &str) -> Vec<&str> {
-        self.pairs.iter().filter(|(k, _)| k == key).map(|(_, v)| v.as_str()).collect()
+        self.pairs
+            .iter()
+            .rev()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("")
     }
     pub fn has(&self, key: &str) -> bool {
         self.pairs.iter().any(|(k, v)| k == key && !v.is_empty())
     }
     pub fn pairs(&self) -> &[(String, String)] {
         &self.pairs
-    }
-    #[cfg(test)]
-    pub fn from_pairs(p: &[(&str, &str)]) -> Self {
-        Self { pairs: p.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect(), files: Vec::new() }
     }
 }
 
@@ -253,15 +279,28 @@ impl<S: Send + Sync> FromRequest<S> for Fields {
                 .await
                 .map_err(|e| AppError::BadRequest(e.body_text()))?;
             let mut out = Fields::default();
-            while let Some(field) = mp.next_field().await.map_err(|e| AppError::BadRequest(e.body_text()))? {
+            while let Some(field) = mp
+                .next_field()
+                .await
+                .map_err(|e| AppError::BadRequest(e.body_text()))?
+            {
                 let name = field.name().unwrap_or("").to_owned();
                 if field.file_name().is_some() {
-                    let bytes = field.bytes().await.map_err(|e| AppError::BadRequest(e.body_text()))?;
+                    let bytes = field
+                        .bytes()
+                        .await
+                        .map_err(|e| AppError::BadRequest(e.body_text()))?;
                     if !bytes.is_empty() {
-                        out.files.push(Upload { name, bytes: bytes.to_vec() });
+                        out.files.push(Upload {
+                            name,
+                            bytes: bytes.to_vec(),
+                        });
                     }
                 } else {
-                    let text = field.text().await.map_err(|e| AppError::BadRequest(e.body_text()))?;
+                    let text = field
+                        .text()
+                        .await
+                        .map_err(|e| AppError::BadRequest(e.body_text()))?;
                     out.pairs.push((name, text));
                 }
             }
@@ -270,7 +309,10 @@ impl<S: Send + Sync> FromRequest<S> for Fields {
             let Form(pairs) = Form::<Vec<(String, String)>>::from_request(req, state)
                 .await
                 .map_err(|e| AppError::BadRequest(e.body_text()))?;
-            Ok(Fields { pairs, files: Vec::new() })
+            Ok(Fields {
+                pairs,
+                files: Vec::new(),
+            })
         }
     }
 }
@@ -284,9 +326,18 @@ const CSP: &str = "default-src 'self'; img-src 'self' data: blob:; style-src 'se
 async fn security_headers(req: Request, next: Next) -> Response {
     let mut res = next.run(req).await;
     let h = res.headers_mut();
-    h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
-    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("same-origin"));
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(CSP),
+    );
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    h.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("same-origin"),
+    );
     h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     h.insert(
         HeaderName::from_static("permissions-policy"),
@@ -322,7 +373,9 @@ pub fn is_same_origin(h: &HeaderMap) -> bool {
         Some(origin) if origin == "null" => false,
         Some(origin) => {
             let origin_host = origin.split_once("://").map(|(_, h)| h).unwrap_or(&origin);
-            let host = get(HeaderName::from_static("x-forwarded-host")).or_else(|| get(header::HOST)).unwrap_or_default();
+            let host = get(HeaderName::from_static("x-forwarded-host"))
+                .or_else(|| get(header::HOST))
+                .unwrap_or_default();
             origin_host.eq_ignore_ascii_case(host.split(',').next().unwrap_or("").trim())
         }
     }
@@ -330,8 +383,12 @@ pub fn is_same_origin(h: &HeaderMap) -> bool {
 
 /// Whether the browser reached us over HTTPS (directly or via the proxy).
 pub fn is_https(h: &HeaderMap) -> bool {
-    h.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).is_some_and(|p| p.eq_ignore_ascii_case("https"))
-        || h.get(header::ORIGIN).and_then(|v| v.to_str().ok()).is_some_and(|o| o.starts_with("https://"))
+    h.get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|p| p.eq_ignore_ascii_case("https"))
+        || h.get(header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|o| o.starts_with("https://"))
 }
 
 // ---------- static files ----------
@@ -351,24 +408,42 @@ pub fn asset_version() -> &'static str {
                 h.update(&a.data);
             }
         }
-        h.finalize().iter().take(5).map(|b| format!("{b:02x}")).collect()
+        h.finalize()
+            .iter()
+            .take(5)
+            .map(|b| format!("{b:02x}"))
+            .collect()
     })
 }
 
 async fn static_file(Path(path): Path<String>) -> Response {
-    let Some(asset) = Assets::get(&path) else { return StatusCode::NOT_FOUND.into_response() };
+    let Some(asset) = Assets::get(&path) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     let mime = mime_guess::from_path(&path).first_or_octet_stream();
     let immutable = path.starts_with("fonts/") || path.ends_with(".css") || path.ends_with(".js");
-    let cache = if immutable { "public, max-age=31536000, immutable" } else { "public, max-age=3600" };
+    let cache = if immutable {
+        "public, max-age=31536000, immutable"
+    } else {
+        "public, max-age=3600"
+    };
     (
-        [(header::CONTENT_TYPE, mime.as_ref().to_owned()), (header::CACHE_CONTROL, cache.to_owned())],
+        [
+            (header::CONTENT_TYPE, mime.as_ref().to_owned()),
+            (header::CACHE_CONTROL, cache.to_owned()),
+        ],
         Body::from(asset.data.into_owned()),
     )
         .into_response()
 }
 
 async fn photo(State(st): State<AppState>, Path(file): Path<String>) -> Response {
-    serve_file(st.photos_dir().join(&file), &file, "public, max-age=31536000, immutable").await
+    serve_file(
+        st.photos_dir().join(&file),
+        &file,
+        "public, max-age=31536000, immutable",
+    )
+    .await
 }
 
 async fn art_file(State(st): State<AppState>, Path(file): Path<String>) -> Response {
@@ -382,7 +457,13 @@ async fn serve_file(path: PathBuf, name: &str, cache: &'static str) -> Response 
     match tokio::fs::read(&path).await {
         Ok(bytes) => {
             let mime = mime_guess::from_path(name).first_or_octet_stream();
-            ([(header::CONTENT_TYPE, mime.as_ref().to_owned()), (header::CACHE_CONTROL, cache.to_owned())], bytes)
+            (
+                [
+                    (header::CONTENT_TYPE, mime.as_ref().to_owned()),
+                    (header::CACHE_CONTROL, cache.to_owned()),
+                ],
+                bytes,
+            )
                 .into_response()
         }
         Err(_) => StatusCode::NOT_FOUND.into_response(),
@@ -397,7 +478,10 @@ pub struct ArtCache {
 
 impl ArtCache {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir, cached: Mutex::new(None) }
+        Self {
+            dir,
+            cached: Mutex::new(None),
+        }
     }
 
     pub fn get(&self) -> Art {
@@ -410,7 +494,10 @@ impl ArtCache {
         let find = |stem: &str| {
             ["svg", "png", "webp", "jpg"].iter().find_map(|ext| {
                 let name = format!("{stem}.{ext}");
-                self.dir.join(&name).is_file().then(|| format!("/art/{name}"))
+                self.dir
+                    .join(&name)
+                    .is_file()
+                    .then(|| format!("/art/{name}"))
             })
         };
         let art = Art {
@@ -431,7 +518,8 @@ pub async fn shutdown_signal() {
     };
     #[cfg(unix)]
     let term = async {
-        if let Ok(mut s) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        if let Ok(mut s) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
             s.recv().await;
         }
     };

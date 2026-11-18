@@ -25,9 +25,13 @@ pub fn compile(node: &Node, ideas: &IdeaMatches) -> Sql {
 
 fn emit(node: &Node, ideas: &IdeaMatches, out: &mut Sql) {
     match node {
-        Node::All => out.text.push_str("1"),
+        Node::All => out.text.push('1'),
         Node::And(kids) | Node::Or(kids) => {
-            let op = if matches!(node, Node::And(_)) { " AND " } else { " OR " };
+            let op = if matches!(node, Node::And(_)) {
+                " AND "
+            } else {
+                " OR "
+            };
             out.text.push('(');
             for (i, k) in kids.iter().enumerate() {
                 if i > 0 {
@@ -70,8 +74,15 @@ fn term(t: &Term, ideas: &IdeaMatches, out: &mut Sql) {
                 push(
                     out,
                     "(i.type_id IN (SELECT id FROM media_types WHERE slug = ? OR slug = ? OR lower(section) = ? OR lower(name) = ? OR lower(name) GLOB ?) OR lower(i.format) GLOB ?)",
-                    [v.clone(), singular.clone(), v.clone(), v.clone(), contains.clone(), contains]
-                        .map(Value::Text),
+                    [
+                        v.clone(),
+                        singular.clone(),
+                        v.clone(),
+                        v.clone(),
+                        contains.clone(),
+                        contains,
+                    ]
+                    .map(Value::Text),
                 );
             }
         }
@@ -115,7 +126,9 @@ fn term(t: &Term, ideas: &IdeaMatches, out: &mut Sql) {
                 push(
                     out,
                     "i.id IN (SELECT value FROM json_each(?))",
-                    [Value::Text(serde_json::to_string(&ids).unwrap_or_else(|_| "[]".into()))],
+                    [Value::Text(
+                        serde_json::to_string(&ids).unwrap_or_else(|_| "[]".into()),
+                    )],
                 );
             }
         }
@@ -144,7 +157,9 @@ fn glob_columns(field: Field) -> &'static str {
         Field::Tag => "i.tags || ' ' || i.description",
         Field::Notes => "i.notes || ' ' || i.description",
         Field::Code => "i.identifier",
-        _ => "i.title || ' ' || i.creator || ' ' || i.publisher || ' ' || i.tags || ' ' || i.description || ' ' || i.notes || ' ' || i.format",
+        _ => {
+            "i.title || ' ' || i.creator || ' ' || i.publisher || ' ' || i.tags || ' ' || i.description || ' ' || i.notes || ' ' || i.format"
+        }
     }
 }
 
@@ -171,7 +186,9 @@ fn text_term(t: &Term, out: &mut Sql) {
         if digits.len() >= 8 && !t.has_wildcards() {
             // ISBN-10 and -13 share a 9-digit core.
             let thirteen = crate::util::isbn13(&digits);
-            let core = if thirteen.len() == 13 && (thirteen.starts_with("978") || thirteen.starts_with("979")) {
+            let core = if thirteen.len() == 13
+                && (thirteen.starts_with("978") || thirteen.starts_with("979"))
+            {
                 thirteen[3..12].to_owned()
             } else {
                 digits
@@ -207,7 +224,12 @@ fn text_term(t: &Term, out: &mut Sql) {
 
 fn year_term(v: &str, out: &mut Sql) {
     let v = v.trim();
-    let num = |s: &str| s.trim().parse::<i64>().ok().filter(|n| (0..=3000).contains(n));
+    let num = |s: &str| {
+        s.trim()
+            .parse::<i64>()
+            .ok()
+            .filter(|n| (0..=3000).contains(n))
+    };
     if let Some((a, b)) = v.split_once("..") {
         match (num(a), num(b)) {
             (Some(a), Some(b)) => push(
@@ -215,13 +237,21 @@ fn year_term(v: &str, out: &mut Sql) {
                 "(i.year BETWEEN ? AND ?)",
                 [Value::Integer(a.min(b)), Value::Integer(a.max(b))],
             ),
-            (Some(a), None) if b.trim().is_empty() => push(out, "(i.year >= ?)", [Value::Integer(a)]),
-            (None, Some(b)) if a.trim().is_empty() => push(out, "(i.year <= ?)", [Value::Integer(b)]),
+            (Some(a), None) if b.trim().is_empty() => {
+                push(out, "(i.year >= ?)", [Value::Integer(a)])
+            }
+            (None, Some(b)) if a.trim().is_empty() => {
+                push(out, "(i.year <= ?)", [Value::Integer(b)])
+            }
             _ => out.text.push('0'),
         }
     } else if let Some(decade) = v.strip_suffix('s').and_then(num) {
         // "1980s"
-        push(out, "(i.year BETWEEN ? AND ?)", [Value::Integer(decade), Value::Integer(decade + 9)]);
+        push(
+            out,
+            "(i.year BETWEEN ? AND ?)",
+            [Value::Integer(decade), Value::Integer(decade + 9)],
+        );
     } else if v.contains(['*', '?']) {
         push(
             out,
@@ -289,10 +319,16 @@ mod tests {
     #[test]
     fn year_forms() {
         assert_eq!(c("year:1990").params, vec![Value::Integer(1990)]);
-        assert_eq!(c("year:1975..1960").params, vec![Value::Integer(1960), Value::Integer(1975)]);
+        assert_eq!(
+            c("year:1975..1960").params,
+            vec![Value::Integer(1960), Value::Integer(1975)]
+        );
         assert!(c("year:1990..").text.contains(">="));
         assert!(c("year:..1990").text.contains("<="));
-        assert_eq!(c("year:1980s").params, vec![Value::Integer(1980), Value::Integer(1989)]);
+        assert_eq!(
+            c("year:1980s").params,
+            vec![Value::Integer(1980), Value::Integer(1989)]
+        );
         assert!(c("year:197*").text.contains("GLOB"));
         assert_eq!(c("year:soon").text, "0");
     }
@@ -306,7 +342,10 @@ mod tests {
 
     #[test]
     fn location_path_pattern() {
-        assert_eq!(c("in:shed/box*").params, vec![Value::Text("*shed*›*box**".into())]);
+        assert_eq!(
+            c("in:shed/box*").params,
+            vec![Value::Text("*shed*›*box**".into())]
+        );
     }
 
     #[test]

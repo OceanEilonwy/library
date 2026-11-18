@@ -34,7 +34,9 @@ impl Field {
     fn from_name(name: &str) -> Option<Self> {
         Some(match name.to_ascii_lowercase().as_str() {
             "title" => Field::Title,
-            "creator" | "author" | "artist" | "director" | "by" | "brand" | "maker" => Field::Creator,
+            "creator" | "author" | "artist" | "director" | "by" | "brand" | "maker" => {
+                Field::Creator
+            }
             "publisher" | "label" | "studio" => Field::Publisher,
             "tag" | "tags" | "subject" => Field::Tag,
             "notes" | "note" | "description" => Field::Notes,
@@ -52,7 +54,13 @@ impl Field {
     pub fn is_text(self) -> bool {
         matches!(
             self,
-            Field::Any | Field::Title | Field::Creator | Field::Publisher | Field::Tag | Field::Notes | Field::Code
+            Field::Any
+                | Field::Title
+                | Field::Creator
+                | Field::Publisher
+                | Field::Tag
+                | Field::Notes
+                | Field::Code
         )
     }
 
@@ -147,7 +155,11 @@ impl Node {
                 Node::And(v) => simplify_and(v.iter().map(|c| go(c, negated)).collect()),
                 Node::Or(v) => {
                     let kids: Vec<Node> = v.iter().map(|c| go(c, negated)).collect();
-                    if kids.iter().any(|k| *k == Node::All) { Node::All } else { Node::Or(kids) }
+                    if kids.contains(&Node::All) {
+                        Node::All
+                    } else {
+                        Node::Or(kids)
+                    }
                 }
                 Node::Not(inner) => Node::Not(Box::new(go(inner, !negated))),
                 Node::Term(t) if !negated && t.field.is_text() => Node::All,
@@ -155,10 +167,6 @@ impl Node {
             }
         }
         go(self, false)
-    }
-
-    pub fn is_all(&self) -> bool {
-        *self == Node::All
     }
 }
 
@@ -206,7 +214,8 @@ fn tokenize(input: &str) -> Vec<Tok> {
             }
             toks.push(Tok::Phrase(s.trim().to_owned()));
             i = j + 1;
-        } else if c == '-' && toks.last().is_none_or(|t| !matches!(t, Tok::Field(_)))
+        } else if c == '-'
+            && toks.last().is_none_or(|t| !matches!(t, Tok::Field(_)))
             && chars.get(i + 1).is_some_and(|n| !n.is_whitespace())
         {
             toks.push(Tok::Not);
@@ -214,7 +223,10 @@ fn tokenize(input: &str) -> Vec<Tok> {
         } else {
             let mut j = i;
             let mut s = String::new();
-            while j < chars.len() && !chars[j].is_whitespace() && !matches!(chars[j], '(' | ')' | '"' | '“' | '”') {
+            while j < chars.len()
+                && !chars[j].is_whitespace()
+                && !matches!(chars[j], '(' | ')' | '"' | '“' | '”')
+            {
                 s.push(chars[j]);
                 j += 1;
             }
@@ -234,7 +246,9 @@ fn tokenize(input: &str) -> Vec<Tok> {
                 "OR" | "||" | "|" => toks.push(Tok::Or),
                 "NOT" => toks.push(Tok::Not),
                 _ => {
-                    let w = s.trim_matches(|c: char| matches!(c, ',' | ';' | ':')).to_owned();
+                    let w = s
+                        .trim_matches(|c: char| matches!(c, ',' | ';' | ':'))
+                        .to_owned();
                     if !w.is_empty() {
                         toks.push(Tok::Word(w));
                     }
@@ -272,7 +286,7 @@ impl Parser {
             kids.push(self.and(field));
         }
         let kids: Vec<Node> = kids.into_iter().collect();
-        if kids.iter().any(|k| *k == Node::All) {
+        if kids.contains(&Node::All) {
             // "x OR" with nothing after it: drop the empty side.
             let rest: Vec<Node> = kids.into_iter().filter(|k| *k != Node::All).collect();
             return match rest.len() {
@@ -281,7 +295,11 @@ impl Parser {
                 _ => Node::Or(rest),
             };
         }
-        if kids.len() == 1 { kids.into_iter().next().expect("one") } else { Node::Or(kids) }
+        if kids.len() == 1 {
+            kids.into_iter().next().expect("one")
+        } else {
+            Node::Or(kids)
+        }
     }
 
     fn and(&mut self, field: Field) -> Node {
@@ -335,7 +353,11 @@ impl Parser {
                 term(field, &w, false)
             }
             Some(Tok::Phrase(p)) => {
-                if p.is_empty() { Node::All } else { term(field, &p, true) }
+                if p.is_empty() {
+                    Node::All
+                } else {
+                    term(field, &p, true)
+                }
             }
             // Stray operators or a lone ")".
             Some(Tok::And) | Some(Tok::Or) | Some(Tok::Not) | Some(Tok::RParen) | None => Node::All,
@@ -344,13 +366,21 @@ impl Parser {
 }
 
 fn term(field: Field, text: &str, phrase: bool) -> Node {
-    Node::Term(Term { field, text: text.to_owned(), phrase })
+    Node::Term(Term {
+        field,
+        text: text.to_owned(),
+        phrase,
+    })
 }
 
 /// Parses a query. Never fails: malformed input degrades to something sensible.
 pub fn parse(input: &str) -> Node {
     let toks = tokenize(input);
-    let mut p = Parser { toks, pos: 0, depth: 0 };
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        depth: 0,
+    };
     let mut parts = vec![p.or(Field::Any)];
     // Unbalanced ")" stops the top level; keep going with what follows.
     while p.pos < p.toks.len() {
@@ -390,15 +420,27 @@ pub fn render(node: &Node) -> String {
                 } else {
                     t.text.clone()
                 };
-                if t.field == Field::Any { v } else { format!("{}:{v}", t.field.name()) }
+                if t.field == Field::Any {
+                    v
+                } else {
+                    format!("{}:{v}", t.field.name())
+                }
             }
             Node::Not(inner) => format!("NOT {}", go(inner, false)),
             Node::And(v) => {
-                let s = v.iter().map(|c| go(c, false)).collect::<Vec<_>>().join(" AND ");
+                let s = v
+                    .iter()
+                    .map(|c| go(c, false))
+                    .collect::<Vec<_>>()
+                    .join(" AND ");
                 if top { s } else { format!("({s})") }
             }
             Node::Or(v) => {
-                let s = v.iter().map(|c| go(c, false)).collect::<Vec<_>>().join(" OR ");
+                let s = v
+                    .iter()
+                    .map(|c| go(c, false))
+                    .collect::<Vec<_>>()
+                    .join(" OR ");
                 if top { s } else { format!("({s})") }
             }
         }
@@ -426,7 +468,10 @@ mod tests {
 
     #[test]
     fn implicit_and() {
-        assert_eq!(parse("le guin"), Node::And(vec![t(Field::Any, "le"), t(Field::Any, "guin")]));
+        assert_eq!(
+            parse("le guin"),
+            Node::And(vec![t(Field::Any, "le"), t(Field::Any, "guin")])
+        );
     }
 
     #[test]
@@ -441,11 +486,17 @@ mod tests {
     fn precedence_and_binds_tighter_than_or() {
         assert_eq!(
             parse("a b OR c"),
-            Node::Or(vec![Node::And(vec![t(Field::Any, "a"), t(Field::Any, "b")]), t(Field::Any, "c")])
+            Node::Or(vec![
+                Node::And(vec![t(Field::Any, "a"), t(Field::Any, "b")]),
+                t(Field::Any, "c")
+            ])
         );
         assert_eq!(
             parse("a (b OR c)"),
-            Node::And(vec![t(Field::Any, "a"), Node::Or(vec![t(Field::Any, "b"), t(Field::Any, "c")])])
+            Node::And(vec![
+                t(Field::Any, "a"),
+                Node::Or(vec![t(Field::Any, "b"), t(Field::Any, "c")])
+            ])
         );
     }
 
@@ -453,31 +504,52 @@ mod tests {
     fn not_and_minus() {
         assert_eq!(
             parse("le guin NOT film"),
-            Node::And(vec![t(Field::Any, "le"), t(Field::Any, "guin"), Node::Not(Box::new(t(Field::Any, "film")))])
+            Node::And(vec![
+                t(Field::Any, "le"),
+                t(Field::Any, "guin"),
+                Node::Not(Box::new(t(Field::Any, "film")))
+            ])
         );
         assert_eq!(parse("-film"), Node::Not(Box::new(t(Field::Any, "film"))));
-        assert_eq!(parse("spider-man"), t(Field::Any, "spider-man"), "inner hyphen is part of the word");
+        assert_eq!(
+            parse("spider-man"),
+            t(Field::Any, "spider-man"),
+            "inner hyphen is part of the word"
+        );
         assert_eq!(parse("year:-5"), t(Field::Year, "-5"));
     }
 
     #[test]
     fn phrases_including_curly_quotes() {
         assert_eq!(parse("\"the left hand\""), p(Field::Any, "the left hand"));
-        assert_eq!(parse("“films for a rainy Sunday”"), p(Field::Any, "films for a rainy Sunday"));
-        assert_eq!(parse("\"unterminated phrase"), p(Field::Any, "unterminated phrase"));
+        assert_eq!(
+            parse("“films for a rainy Sunday”"),
+            p(Field::Any, "films for a rainy Sunday")
+        );
+        assert_eq!(
+            parse("\"unterminated phrase"),
+            p(Field::Any, "unterminated phrase")
+        );
     }
 
     #[test]
     fn fields_and_synonyms() {
         assert_eq!(
             parse("title:earth* author:\"le guin\" year:1960..1975"),
-            Node::And(vec![t(Field::Title, "earth*"), p(Field::Creator, "le guin"), t(Field::Year, "1960..1975")])
+            Node::And(vec![
+                t(Field::Title, "earth*"),
+                p(Field::Creator, "le guin"),
+                t(Field::Year, "1960..1975")
+            ])
         );
         assert_eq!(parse("director:miyazaki"), t(Field::Creator, "miyazaki"));
         assert_eq!(parse("in:shed"), t(Field::In, "shed"));
         assert_eq!(parse("loan:*"), t(Field::Loan, "*"));
         assert_eq!(parse("loan:"), t(Field::Loan, "*"));
-        assert_eq!(parse("idea:\"lonely lighthouse keepers\""), p(Field::Idea, "lonely lighthouse keepers"));
+        assert_eq!(
+            parse("idea:\"lonely lighthouse keepers\""),
+            p(Field::Idea, "lonely lighthouse keepers")
+        );
     }
 
     #[test]
@@ -491,19 +563,36 @@ mod tests {
     #[test]
     fn unknown_field_is_text() {
         assert_eq!(parse("foo:bar"), t(Field::Any, "foo:bar"));
-        assert_eq!(parse("note: hello"), t(Field::Notes, "hello"), "space after the colon is fine");
-        assert_eq!(parse("title: OR x"), t(Field::Any, "x"), "field with nothing after it is dropped");
+        assert_eq!(
+            parse("note: hello"),
+            t(Field::Notes, "hello"),
+            "space after the colon is fine"
+        );
+        assert_eq!(
+            parse("title: OR x"),
+            t(Field::Any, "x"),
+            "field with nothing after it is dropped"
+        );
     }
 
     #[test]
     fn malformed_input_degrades_gracefully() {
         assert_eq!(parse("a OR"), t(Field::Any, "a"));
         assert_eq!(parse("AND OR NOT"), Node::All);
-        assert_eq!(parse("(a b"), Node::And(vec![t(Field::Any, "a"), t(Field::Any, "b")]));
-        assert_eq!(parse("a) b"), Node::And(vec![t(Field::Any, "a"), t(Field::Any, "b")]));
+        assert_eq!(
+            parse("(a b"),
+            Node::And(vec![t(Field::Any, "a"), t(Field::Any, "b")])
+        );
+        assert_eq!(
+            parse("a) b"),
+            Node::And(vec![t(Field::Any, "a"), t(Field::Any, "b")])
+        );
         let deep = "(".repeat(100) + "x" + &")".repeat(100);
         let _ = parse(&deep); // must not overflow the stack
-        let many = (0..200).map(|i| format!("w{i}")).collect::<Vec<_>>().join(" OR ");
+        let many = (0..200)
+            .map(|i| format!("w{i}"))
+            .collect::<Vec<_>>()
+            .join(" OR ");
         let mut n = 0;
         parse(&many).walk_terms(false, &mut |_, _| n += 1);
         assert_eq!(n, MAX_TERMS);
@@ -511,13 +600,21 @@ mod tests {
 
     #[test]
     fn wildcard_kinds() {
-        let Node::Term(prefix) = parse("sea*") else { panic!() };
+        let Node::Term(prefix) = parse("sea*") else {
+            panic!()
+        };
         assert!(prefix.is_prefix() && prefix.has_wildcards());
-        let Node::Term(inner) = parse("gr?y") else { panic!() };
+        let Node::Term(inner) = parse("gr?y") else {
+            panic!()
+        };
         assert!(!inner.is_prefix() && inner.has_wildcards());
-        let Node::Term(both) = parse("*essays*") else { panic!() };
+        let Node::Term(both) = parse("*essays*") else {
+            panic!()
+        };
         assert!(!both.is_prefix());
-        let Node::Term(star) = parse("*") else { panic!() };
+        let Node::Term(star) = parse("*") else {
+            panic!()
+        };
         assert!(!star.is_prefix());
     }
 
@@ -540,7 +637,11 @@ mod tests {
     #[test]
     fn term_collections() {
         let n = parse("sea title:old NOT whale idea:ocean idea:ocean in:shed");
-        let texts: Vec<&str> = n.positive_text_terms().iter().map(|t| t.text.as_str()).collect();
+        let texts: Vec<&str> = n
+            .positive_text_terms()
+            .iter()
+            .map(|t| t.text.as_str())
+            .collect();
         assert_eq!(texts, vec!["sea", "old"]);
         assert_eq!(n.idea_texts(), vec!["ocean"]);
     }

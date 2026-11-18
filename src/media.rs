@@ -33,7 +33,9 @@ pub fn thumb_name(file: &str) -> String {
 pub fn is_safe_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
         && !name.starts_with('.')
         && !name.contains("..")
 }
@@ -50,10 +52,12 @@ fn decode(bytes: &[u8]) -> Result<DynamicImage> {
     limits.max_image_height = Some(12_000);
     limits.max_alloc = Some(512 << 20);
     reader.limits(limits);
-    let mut decoder = reader
-        .into_decoder()
-        .map_err(|_| anyhow::anyhow!("That file isn't a photo we can read (use JPEG, PNG, WebP or GIF)."))?;
-    let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut decoder = reader.into_decoder().map_err(|_| {
+        anyhow::anyhow!("That file isn't a photo we can read (use JPEG, PNG, WebP or GIF).")
+    })?;
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
     let mut img = DynamicImage::from_decoder(decoder).context("decoding photo")?;
     img.apply_orientation(orientation);
     Ok(img)
@@ -66,14 +70,20 @@ pub fn save_photo(dir: &Path, bytes: &[u8]) -> Result<Saved> {
     std::fs::create_dir_all(dir)?;
     let stem: String = {
         let mut rng = rand::thread_rng();
-        (0..20).map(|_| format!("{:x}", rng.gen_range(0..16u8))).collect()
+        (0..20)
+            .map(|_| format!("{:x}", rng.gen_range(0..16u8)))
+            .collect()
     };
     let file = format!("{stem}.jpg");
     let full = shrink(&img, FULL_EDGE);
     let thumb = shrink(&img, THUMB_EDGE);
     write_jpeg(&dir.join(&file), &full, 84)?;
     write_jpeg(&dir.join(thumb_name(&file)), &thumb, 80)?;
-    Ok(Saved { file, width: full.width(), height: full.height() })
+    Ok(Saved {
+        file,
+        width: full.width(),
+        height: full.height(),
+    })
 }
 
 fn shrink(img: &DynamicImage, edge: u32) -> DynamicImage {
@@ -114,14 +124,22 @@ pub fn read_barcode(bytes: &[u8]) -> Result<String> {
     for candidate in attempts {
         let luma = candidate.to_luma8();
         let (w, h) = luma.dimensions();
-        let mut hints = DecodeHints { TryHarder: Some(true), ..Default::default() };
-        if let Ok(results) = rxing::helpers::detect_multiple_in_luma_with_hints(luma.into_raw(), w, h, &mut hints) {
+        let mut hints = DecodeHints {
+            TryHarder: Some(true),
+            ..Default::default()
+        };
+        if let Ok(results) =
+            rxing::helpers::detect_multiple_in_luma_with_hints(luma.into_raw(), w, h, &mut hints)
+        {
             let mut best: Option<String> = None;
             for r in results {
                 let text = r.getText().trim().to_owned();
                 let linear = matches!(
                     r.getBarcodeFormat(),
-                    BarcodeFormat::EAN_13 | BarcodeFormat::EAN_8 | BarcodeFormat::UPC_A | BarcodeFormat::UPC_E
+                    BarcodeFormat::EAN_13
+                        | BarcodeFormat::EAN_8
+                        | BarcodeFormat::UPC_A
+                        | BarcodeFormat::UPC_E
                 );
                 if linear {
                     return Ok(text);
@@ -133,7 +151,9 @@ pub fn read_barcode(bytes: &[u8]) -> Result<String> {
             }
         }
     }
-    bail!("No barcode found. Try again with the barcode filling more of the photo, or type the number.")
+    bail!(
+        "No barcode found. Try again with the barcode filling more of the photo, or type the number."
+    )
 }
 
 #[cfg(test)]
@@ -141,7 +161,9 @@ mod tests {
     use super::*;
 
     fn png(w: u32, h: u32) -> Vec<u8> {
-        let img = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x % 255) as u8, (y % 255) as u8, 90]));
+        let img = image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([(x % 255) as u8, (y % 255) as u8, 90])
+        });
         let mut buf = Vec::new();
         DynamicImage::ImageRgb8(img)
             .write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
@@ -189,7 +211,9 @@ mod tests {
     #[test]
     fn reads_a_generated_ean13() {
         use rxing::{BarcodeFormat, Writer, oned::EAN13Writer};
-        let matrix = EAN13Writer.encode("9780261102958", &BarcodeFormat::EAN_13, 600, 200).unwrap();
+        let matrix = EAN13Writer
+            .encode("9780261102958", &BarcodeFormat::EAN_13, 600, 200)
+            .unwrap();
         let (w, h) = (matrix.getWidth(), matrix.getHeight());
         // Add a white quiet zone around the code, as on a real book.
         let img = image::GrayImage::from_fn(w + 80, h + 80, |x, y| {
@@ -198,7 +222,9 @@ mod tests {
             image::Luma([if black { 0 } else { 255 }])
         });
         let mut buf = Vec::new();
-        DynamicImage::ImageLuma8(img).write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png).unwrap();
+        DynamicImage::ImageLuma8(img)
+            .write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
+            .unwrap();
         assert_eq!(read_barcode(&buf).unwrap(), "9780261102958");
         assert!(read_barcode(&png(300, 300)).is_err());
     }

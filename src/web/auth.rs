@@ -10,8 +10,10 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng};
 use argon2::Argon2;
+use argon2::password_hash::{
+    PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng,
+};
 use axum::http::HeaderMap;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -39,7 +41,11 @@ pub enum Login {
 
 impl Auth {
     pub fn new(key: [u8; 32], password_hash: Option<String>) -> Self {
-        Self { key, password_hash, failures: Mutex::new(VecDeque::new()) }
+        Self {
+            key,
+            password_hash,
+            failures: Mutex::new(VecDeque::new()),
+        }
     }
 
     /// Loads the cookie-signing key from `path`, creating it on first run.
@@ -55,7 +61,8 @@ impl Auth {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(path, hex_encode(&key)).with_context(|| format!("writing {}", path.display()))?;
+        std::fs::write(path, hex_encode(&key))
+            .with_context(|| format!("writing {}", path.display()))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -71,7 +78,9 @@ impl Auth {
     /// Checks a password; on success returns the cookie value to set.
     /// Runs Argon2, so call it from a blocking thread.
     pub fn login(&self, password: &str) -> Login {
-        let Some(hash) = &self.password_hash else { return Login::NotConfigured };
+        let Some(hash) = &self.password_hash else {
+            return Login::NotConfigured;
+        };
         {
             let mut f = self.failures.lock().unwrap_or_else(|e| e.into_inner());
             while f.front().is_some_and(|t| t.elapsed() > FAIL_WINDOW) {
@@ -84,7 +93,10 @@ impl Auth {
         if verify_password(hash, password) {
             Login::Ok(self.issue(jiff::Timestamp::now().as_second()))
         } else {
-            self.failures.lock().unwrap_or_else(|e| e.into_inner()).push_back(Instant::now());
+            self.failures
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_back(Instant::now());
             Login::Wrong
         }
     }
@@ -101,12 +113,18 @@ impl Auth {
     }
 
     pub fn verify_cookie(&self, value: &str, now: i64) -> bool {
-        let Some((ts, sig)) = value.split_once('.') else { return false };
-        let Ok(ts) = ts.parse::<i64>() else { return false };
+        let Some((ts, sig)) = value.split_once('.') else {
+            return false;
+        };
+        let Ok(ts) = ts.parse::<i64>() else {
+            return false;
+        };
         if ts > now + 60 || now - ts > MAX_AGE_SECS {
             return false;
         }
-        let Ok(sig) = URL_SAFE_NO_PAD.decode(sig) else { return false };
+        let Ok(sig) = URL_SAFE_NO_PAD.decode(sig) else {
+            return false;
+        };
         let mut m = <Hmac<Sha256>>::new_from_slice(&self.key).expect("any key length");
         m.update(format!("admin:{ts}").as_bytes());
         m.verify_slice(&sig).is_ok()
@@ -114,7 +132,8 @@ impl Auth {
 
     /// True if the request carries a valid admin cookie.
     pub fn is_admin(&self, headers: &HeaderMap) -> bool {
-        cookie(headers, COOKIE).is_some_and(|v| self.verify_cookie(&v, jiff::Timestamp::now().as_second()))
+        cookie(headers, COOKIE)
+            .is_some_and(|v| self.verify_cookie(&v, jiff::Timestamp::now().as_second()))
     }
 }
 
@@ -128,7 +147,11 @@ pub fn hash_password(password: &str) -> Result<String> {
 
 pub fn verify_password(hash: &str, password: &str) -> bool {
     PasswordHash::new(hash)
-        .map(|h| Argon2::default().verify_password(password.as_bytes(), &h).is_ok())
+        .map(|h| {
+            Argon2::default()
+                .verify_password(password.as_bytes(), &h)
+                .is_ok()
+        })
         .unwrap_or(false)
 }
 
@@ -154,7 +177,11 @@ pub fn session_cookie(value: &str, secure: bool) -> String {
 
 /// Only allow redirects to paths on this site.
 pub fn safe_next(next: &str) -> String {
-    if next.starts_with('/') && !next.starts_with("//") && !next.starts_with("/\\") && !next.contains("://") {
+    if next.starts_with('/')
+        && !next.starts_with("//")
+        && !next.starts_with("/\\")
+        && !next.contains("://")
+    {
         next.to_owned()
     } else {
         "/".to_owned()
@@ -166,10 +193,13 @@ fn hex_encode(b: &[u8]) -> String {
 }
 
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect()
 }
 
 #[cfg(test)]
@@ -191,7 +221,9 @@ mod tests {
     #[test]
     fn login_issues_verifiable_cookie() {
         let a = auth();
-        let Login::Ok(c) = a.login("open sesame") else { panic!("login failed") };
+        let Login::Ok(c) = a.login("open sesame") else {
+            panic!("login failed")
+        };
         let now = jiff::Timestamp::now().as_second();
         assert!(a.verify_cookie(&c, now));
         assert!(!a.verify_cookie(&c, now + MAX_AGE_SECS + 10), "expires");
@@ -231,7 +263,10 @@ mod tests {
     #[test]
     fn cookie_parsing_and_next() {
         let mut h = HeaderMap::new();
-        h.insert(axum::http::header::COOKIE, "a=1; library_admin=xyz; b=2".parse().unwrap());
+        h.insert(
+            axum::http::header::COOKIE,
+            "a=1; library_admin=xyz; b=2".parse().unwrap(),
+        );
         assert_eq!(cookie(&h, COOKIE).as_deref(), Some("xyz"));
         assert_eq!(cookie(&h, "zzz"), None);
         assert_eq!(safe_next("/items/3"), "/items/3");

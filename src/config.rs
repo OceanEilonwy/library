@@ -104,8 +104,8 @@ impl Config {
             tracing::warn!(path = %path.display(), "config file not found, using defaults");
             return Ok(Self::default());
         }
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         Self::parse(&text).with_context(|| format!("parsing {}", path.display()))
     }
 

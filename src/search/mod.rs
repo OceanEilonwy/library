@@ -122,7 +122,8 @@ pub async fn search(db: &Db, semantic: &Semantic, req: Request) -> Result<Result
     }
 
     let th = semantic.thresholds();
-    db.read(move |c| run(c, &node, &text_terms, query_vec, idea_vecs, th, &req)).await
+    db.read(move |c| run(c, &node, &text_terms, query_vec, idea_vecs, th, &req))
+        .await
 }
 
 fn run(
@@ -173,7 +174,9 @@ fn run(
             .map(|(id, _)| *id)
             .collect();
         let allowed: HashSet<i64> =
-            ids_in(c, &candidates, &compile(&structural, &ideas), &filters)?.into_iter().collect();
+            ids_in(c, &candidates, &compile(&structural, &ideas), &filters)?
+                .into_iter()
+                .collect();
         for (id, sim) in &near {
             if !allowed.contains(id) {
                 continue;
@@ -222,25 +225,36 @@ fn run(
     };
 
     let total = ordered.len();
-    let page: Vec<i64> = ordered.iter().skip(req.offset).take(req.limit.max(1)).copied().collect();
+    let page: Vec<i64> = ordered
+        .iter()
+        .skip(req.offset)
+        .take(req.limit.max(1))
+        .copied()
+        .collect();
     let idea_set: HashSet<i64> = idea_only.iter().copied().collect();
     let hits = items::summaries(c, &page)?
         .into_iter()
         .map(|s| {
             let by_idea = idea_set.contains(&s.id);
-            let reason = if by_idea {
-                Some("by idea".to_owned())
-            } else if idea_rank.contains_key(&s.id) && text_terms.is_empty() {
+            let reason = if by_idea || (idea_rank.contains_key(&s.id) && text_terms.is_empty()) {
                 Some("by idea".to_owned())
             } else {
                 reason_for(&s, text_terms)
             };
-            Hit { item: s, reason, by_idea }
+            Hit {
+                item: s,
+                reason,
+                by_idea,
+            }
         })
         .collect();
     let see_also = items::summaries(c, &see_also_ids)?
         .into_iter()
-        .map(|s| Hit { item: s, reason: Some("related idea".into()), by_idea: true })
+        .map(|s| Hit {
+            item: s,
+            reason: Some("related idea".into()),
+            by_idea: true,
+        })
         .collect();
 
     Ok(Results {
@@ -255,9 +269,13 @@ fn run(
 }
 
 fn filters_sql(c: &Connection, f: &Filters) -> Result<Sql> {
-    let mut sql = Sql { text: "1".into(), params: Vec::new() };
+    let mut sql = Sql {
+        text: "1".into(),
+        params: Vec::new(),
+    };
     if let Some(slug) = &f.type_slug {
-        sql.text.push_str(" AND i.type_id IN (SELECT id FROM media_types WHERE slug = ?)");
+        sql.text
+            .push_str(" AND i.type_id IN (SELECT id FROM media_types WHERE slug = ?)");
         sql.params.push(Value::Text(slug.clone()));
     }
     if let Some(place) = f.place
@@ -267,8 +285,13 @@ fn filters_sql(c: &Connection, f: &Filters) -> Result<Sql> {
             " AND i.location_id IN (SELECT id FROM locations WHERE id = ? OR path LIKE ? ESCAPE '\\')",
         );
         sql.params.push(Value::Integer(loc.id));
-        let escaped = loc.path.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
-        sql.params.push(Value::Text(format!("{escaped}{}%", locations::SEP)));
+        let escaped = loc
+            .path
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        sql.params
+            .push(Value::Text(format!("{escaped}{}%", locations::SEP)));
     }
     if let Some(d) = f.decade {
         sql.text.push_str(" AND i.year BETWEEN ? AND ?");
@@ -307,7 +330,10 @@ fn ids_in(c: &Connection, ids: &[i64], cond: &Sql, filters: &Sql) -> Result<Vec<
         cond.text, filters.text
     );
     let json = Value::Text(serde_json::to_string(ids)?);
-    let params: Vec<&Value> = std::iter::once(&json).chain(&cond.params).chain(&filters.params).collect();
+    let params: Vec<&Value> = std::iter::once(&json)
+        .chain(&cond.params)
+        .chain(&filters.params)
+        .collect();
     let mut stmt = c.prepare(&text)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| r.get(0))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -373,7 +399,9 @@ fn reason_for(s: &Summary, terms: &[Term]) -> Option<String> {
     for t in terms {
         let r = match t.field {
             Field::Code => "isbn".to_owned(),
-            _ if contains(&title, t) && matches!(t.field, Field::Any | Field::Title) => "title".to_owned(),
+            _ if contains(&title, t) && matches!(t.field, Field::Any | Field::Title) => {
+                "title".to_owned()
+            }
             _ if contains(&creator, t) && matches!(t.field, Field::Any | Field::Creator) => {
                 s.creator_label.to_lowercase()
             }
@@ -425,7 +453,11 @@ impl Advanced {
         let mut parts: Vec<String> = Vec::new();
         if !self.words.trim().is_empty() {
             let w = query::render(&query::parse(&self.words));
-            parts.push(if w.contains(" OR ") { format!("({w})") } else { w });
+            parts.push(if w.contains(" OR ") {
+                format!("({w})")
+            } else {
+                w
+            });
         }
         let quote = |field: &str, v: &str| {
             let v = v.trim().replace('"', "");
@@ -461,7 +493,11 @@ impl Advanced {
             1 => parts.push(format!("type:{}", types[0])),
             _ => parts.push(format!(
                 "type:({})",
-                types.iter().map(|t| t.as_str()).collect::<Vec<_>>().join(" OR ")
+                types
+                    .iter()
+                    .map(|t| t.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" OR ")
             )),
         }
         if !self.loan.trim().is_empty() {
@@ -490,7 +526,15 @@ mod tests {
         ids: HashMap<&'static str, i64>,
     }
 
-    fn add(c: &mut Connection, slug: &str, title: &str, creator: &str, year: Option<i64>, desc: &str, loc: &str) -> i64 {
+    fn add(
+        c: &mut Connection,
+        slug: &str,
+        title: &str,
+        creator: &str,
+        year: Option<i64>,
+        desc: &str,
+        loc: &str,
+    ) -> i64 {
         let t = types::by_slug(c, slug).unwrap().unwrap();
         create(
             c,
@@ -511,25 +555,135 @@ mod tests {
         let (db, dir) = temp_db();
         let mut ids = HashMap::new();
         db.write_blocking(|c| {
-            ids.insert("earthsea", add(c, "book", "A Wizard of Earthsea", "Ursula K. Le Guin", Some(1968), "wizard school, islands", "Lounge > Bookcase 1 > Shelf 2"));
-            ids.insert("lefthand", add(c, "book", "The Left Hand of Darkness", "Ursula K. Le Guin", Some(1969), "winter planet", "Shed > Books Box 1"));
-            ids.insert("lathe", add(c, "book", "The Lathe of Heaven", "Ursula K. Le Guin", Some(1971), "dreams", "Shed > Books Box 1"));
-            ids.insert("oldman", add(c, "book", "The Old Man and the Sea", "Ernest Hemingway", Some(1952), "fisherman", "Lounge > Bookcase 1 > Shelf 1"));
-            ids.insert("moby", add(c, "book", "Moby-Dick", "Herman Melville", Some(1851), "whaling voyage", "Shed > Books Box 2"));
-            ids.insert("totoro", add(c, "film", "My Neighbour Totoro", "Hayao Miyazaki", Some(1988), "forest spirits", "Lounge > TV cabinet"));
-            ids.insert("tales", add(c, "film", "Tales from Earthsea", "Gorō Miyazaki", Some(2006), "dragons", "Lounge > TV cabinet"));
-            ids.insert("tent", add(c, "camping", "Tent, 2-person", "MSR", None, "hiking camping", "Shed > Camping shelf"));
-            ids.insert("grey", add(c, "book", "The Grey King", "Susan Cooper", Some(1975), "", ""));
+            ids.insert(
+                "earthsea",
+                add(
+                    c,
+                    "book",
+                    "A Wizard of Earthsea",
+                    "Ursula K. Le Guin",
+                    Some(1968),
+                    "wizard school, islands",
+                    "Lounge > Bookcase 1 > Shelf 2",
+                ),
+            );
+            ids.insert(
+                "lefthand",
+                add(
+                    c,
+                    "book",
+                    "The Left Hand of Darkness",
+                    "Ursula K. Le Guin",
+                    Some(1969),
+                    "winter planet",
+                    "Shed > Books Box 1",
+                ),
+            );
+            ids.insert(
+                "lathe",
+                add(
+                    c,
+                    "book",
+                    "The Lathe of Heaven",
+                    "Ursula K. Le Guin",
+                    Some(1971),
+                    "dreams",
+                    "Shed > Books Box 1",
+                ),
+            );
+            ids.insert(
+                "oldman",
+                add(
+                    c,
+                    "book",
+                    "The Old Man and the Sea",
+                    "Ernest Hemingway",
+                    Some(1952),
+                    "fisherman",
+                    "Lounge > Bookcase 1 > Shelf 1",
+                ),
+            );
+            ids.insert(
+                "moby",
+                add(
+                    c,
+                    "book",
+                    "Moby-Dick",
+                    "Herman Melville",
+                    Some(1851),
+                    "whaling voyage",
+                    "Shed > Books Box 2",
+                ),
+            );
+            ids.insert(
+                "totoro",
+                add(
+                    c,
+                    "film",
+                    "My Neighbour Totoro",
+                    "Hayao Miyazaki",
+                    Some(1988),
+                    "forest spirits",
+                    "Lounge > TV cabinet",
+                ),
+            );
+            ids.insert(
+                "tales",
+                add(
+                    c,
+                    "film",
+                    "Tales from Earthsea",
+                    "Gorō Miyazaki",
+                    Some(2006),
+                    "dragons",
+                    "Lounge > TV cabinet",
+                ),
+            );
+            ids.insert(
+                "tent",
+                add(
+                    c,
+                    "camping",
+                    "Tent, 2-person",
+                    "MSR",
+                    None,
+                    "hiking camping",
+                    "Shed > Camping shelf",
+                ),
+            );
+            ids.insert(
+                "grey",
+                add(
+                    c,
+                    "book",
+                    "The Grey King",
+                    "Susan Cooper",
+                    Some(1975),
+                    "",
+                    "",
+                ),
+            );
             Ok(())
         })
         .unwrap();
         let lefthand = ids["lefthand"];
-        db.write_blocking(|c| loans::lend(c, lefthand, "Sam")).unwrap();
+        db.write_blocking(|c| loans::lend(c, lefthand, "Sam"))
+            .unwrap();
         Lib { db, _dir: dir, ids }
     }
 
     async fn q(lib: &Lib, sem: &Semantic, query: &str) -> Vec<i64> {
-        let r = search(&lib.db, sem, Request { q: query.into(), limit: 50, ..Default::default() }).await.unwrap();
+        let r = search(
+            &lib.db,
+            sem,
+            Request {
+                q: query.into(),
+                limit: 50,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         r.hits.iter().map(|h| h.item.id).collect()
     }
 
@@ -542,24 +696,54 @@ mod tests {
         let lib = library();
         let none = Semantic::disabled();
         let id = |k: &str| lib.ids[k];
-        assert_eq!(set(&q(&lib, &none, "le guin").await), set(&[id("earthsea"), id("lefthand"), id("lathe")]));
-        assert_eq!(set(&q(&lib, &none, "earth*").await), set(&[id("earthsea"), id("tales")]));
-        assert_eq!(q(&lib, &none, "title:earth* type:book").await, vec![id("earthsea")]);
-        assert_eq!(set(&q(&lib, &none, "earthsea NOT type:film").await), set(&[id("earthsea")]));
-        assert_eq!(set(&q(&lib, &none, "earthsea -film").await), set(&[id("earthsea")]));
-        assert_eq!(set(&q(&lib, &none, "miyazaki OR melville").await), set(&[id("totoro"), id("tales"), id("moby")]));
+        assert_eq!(
+            set(&q(&lib, &none, "le guin").await),
+            set(&[id("earthsea"), id("lefthand"), id("lathe")])
+        );
+        assert_eq!(
+            set(&q(&lib, &none, "earth*").await),
+            set(&[id("earthsea"), id("tales")])
+        );
+        assert_eq!(
+            q(&lib, &none, "title:earth* type:book").await,
+            vec![id("earthsea")]
+        );
+        assert_eq!(
+            set(&q(&lib, &none, "earthsea NOT type:film").await),
+            set(&[id("earthsea")])
+        );
+        assert_eq!(
+            set(&q(&lib, &none, "earthsea -film").await),
+            set(&[id("earthsea")])
+        );
+        assert_eq!(
+            set(&q(&lib, &none, "miyazaki OR melville").await),
+            set(&[id("totoro"), id("tales"), id("moby")])
+        );
         assert_eq!(q(&lib, &none, "\"old man\"").await, vec![id("oldman")]);
         assert_eq!(q(&lib, &none, "gr?y").await, vec![id("grey")]);
-        assert_eq!(set(&q(&lib, &none, "author:\"le guin\" year:1960..1970").await), set(&[id("earthsea"), id("lefthand")]));
+        assert_eq!(
+            set(&q(&lib, &none, "author:\"le guin\" year:1960..1970").await),
+            set(&[id("earthsea"), id("lefthand")])
+        );
         assert_eq!(q(&lib, &none, "year:1980s").await, vec![id("totoro")]);
-        assert_eq!(set(&q(&lib, &none, "in:shed type:book").await), set(&[id("lefthand"), id("lathe"), id("moby")]));
-        assert_eq!(set(&q(&lib, &none, "in:shed/books*").await), set(&[id("lefthand"), id("lathe"), id("moby")]));
+        assert_eq!(
+            set(&q(&lib, &none, "in:shed type:book").await),
+            set(&[id("lefthand"), id("lathe"), id("moby")])
+        );
+        assert_eq!(
+            set(&q(&lib, &none, "in:shed/books*").await),
+            set(&[id("lefthand"), id("lathe"), id("moby")])
+        );
         assert_eq!(q(&lib, &none, "loan:*").await, vec![id("lefthand")]);
         assert_eq!(q(&lib, &none, "loan:sam").await, vec![id("lefthand")]);
         assert!(!q(&lib, &none, "loan:no").await.contains(&id("lefthand")));
         assert_eq!(q(&lib, &none, "type:camping").await, vec![id("tent")]);
         assert_eq!(q(&lib, &none, "type:equipment").await, vec![id("tent")]);
-        assert_eq!(set(&q(&lib, &none, "type:films").await), set(&[id("totoro"), id("tales")]));
+        assert_eq!(
+            set(&q(&lib, &none, "type:films").await),
+            set(&[id("totoro"), id("tales")])
+        );
         assert_eq!(q(&lib, &none, "nothing-like-this").await, Vec::<i64>::new());
         // Diacritics fold: "Goro" finds "Gorō".
         assert_eq!(q(&lib, &none, "goro").await, vec![id("tales")]);
@@ -568,39 +752,88 @@ mod tests {
     #[tokio::test]
     async fn empty_query_lists_everything_sorted_by_title() {
         let lib = library();
-        let r = search(&lib.db, &Semantic::disabled(), Request { limit: 3, ..Default::default() }).await.unwrap();
+        let r = search(
+            &lib.db,
+            &Semantic::disabled(),
+            Request {
+                limit: 3,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(r.total, 9);
         assert!(r.has_more);
         assert!(!r.has_text);
         // "The Grey King" sorts under G, "The Lathe…" under L; "Earthsea" (A Wizard) under W.
         let titles: Vec<&str> = r.hits.iter().map(|h| h.item.title.as_str()).collect();
-        assert_eq!(titles, vec!["The Grey King", "The Lathe of Heaven", "The Left Hand of Darkness"]);
+        assert_eq!(
+            titles,
+            vec![
+                "The Grey King",
+                "The Lathe of Heaven",
+                "The Left Hand of Darkness"
+            ]
+        );
     }
 
     #[tokio::test]
     async fn title_matches_rank_above_other_fields_and_reasons_explain() {
         let lib = library();
-        let r = search(&lib.db, &Semantic::disabled(), Request { q: "earthsea".into(), limit: 10, ..Default::default() })
-            .await
-            .unwrap();
+        let r = search(
+            &lib.db,
+            &Semantic::disabled(),
+            Request {
+                q: "earthsea".into(),
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(r.hits[0].reason.as_deref(), Some("title"));
-        let r = search(&lib.db, &Semantic::disabled(), Request { q: "miyazaki".into(), limit: 10, ..Default::default() })
-            .await
-            .unwrap();
-        assert!(r.hits.iter().all(|h| h.reason.as_deref() == Some("director")));
+        let r = search(
+            &lib.db,
+            &Semantic::disabled(),
+            Request {
+                q: "miyazaki".into(),
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            r.hits
+                .iter()
+                .all(|h| h.reason.as_deref() == Some("director"))
+        );
     }
 
     #[tokio::test]
     async fn filters_and_sorts() {
         let lib = library();
         let none = Semantic::disabled();
-        let place = lib.db.read_blocking(|c| Ok(locations::list(c)?.into_iter().find(|l| l.path == "Shed").unwrap().id)).unwrap();
+        let place = lib
+            .db
+            .read_blocking(|c| {
+                Ok(locations::list(c)?
+                    .into_iter()
+                    .find(|l| l.path == "Shed")
+                    .unwrap()
+                    .id)
+            })
+            .unwrap();
         let r = search(
             &lib.db,
             &none,
             Request {
                 q: "".into(),
-                filters: Filters { place: Some(place), availability: Availability::OnShelf, ..Default::default() },
+                filters: Filters {
+                    place: Some(place),
+                    availability: Availability::OnShelf,
+                    ..Default::default()
+                },
                 sort: Sort::Year,
                 limit: 50,
                 ..Default::default()
@@ -609,12 +842,19 @@ mod tests {
         .await
         .unwrap();
         let titles: Vec<&str> = r.hits.iter().map(|h| h.item.title.as_str()).collect();
-        assert_eq!(titles, vec!["The Lathe of Heaven", "Moby-Dick", "Tent, 2-person"]);
+        assert_eq!(
+            titles,
+            vec!["The Lathe of Heaven", "Moby-Dick", "Tent, 2-person"]
+        );
         let r = search(
             &lib.db,
             &none,
             Request {
-                filters: Filters { type_slug: Some("film".into()), decade: Some(2000), ..Default::default() },
+                filters: Filters {
+                    type_slug: Some("film".into()),
+                    decade: Some(2000),
+                    ..Default::default()
+                },
                 limit: 50,
                 ..Default::default()
             },
@@ -630,10 +870,22 @@ mod tests {
         let lib = library();
         crate::embed::index_all_blocking(&lib.db, &FakeEmbedder).unwrap();
         let sem = Semantic::with(Arc::new(FakeEmbedder));
-        let r = search(&lib.db, &sem, Request { q: "ocean".into(), limit: 10, ..Default::default() }).await.unwrap();
+        let r = search(
+            &lib.db,
+            &sem,
+            Request {
+                q: "ocean".into(),
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         // No item contains the word "ocean", but Moby-Dick's description is about the sea.
         assert_eq!(r.by_name, 0);
-        assert!(r.hits.iter().any(|h| h.item.id == lib.ids["moby"] && h.by_idea && h.reason.as_deref() == Some("by idea")));
+        assert!(r.hits.iter().any(|h| h.item.id == lib.ids["moby"]
+            && h.by_idea
+            && h.reason.as_deref() == Some("by idea")));
 
         // Explicit idea: term combines with structure.
         let ids = q(&lib, &sem, "idea:dragons type:film").await;
@@ -642,7 +894,17 @@ mod tests {
         assert!(!ids.contains(&lib.ids["tales"]));
 
         // Structural constraints also limit meaning matches.
-        let r = search(&lib.db, &sem, Request { q: "ocean type:film".into(), limit: 10, ..Default::default() }).await.unwrap();
+        let r = search(
+            &lib.db,
+            &sem,
+            Request {
+                q: "ocean type:film".into(),
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert!(r.hits.iter().all(|h| h.item.type_slug == "film"));
     }
 
@@ -650,8 +912,36 @@ mod tests {
     async fn hostile_input_never_errors() {
         let lib = library();
         let none = Semantic::disabled();
-        for qs in ["\"", "*", "**", "NOT", "(((", "title:\"", "a\"b", "year:abc", "in:", "type:*", "idea:", "\" OR \"", "[", "%_", "NEAR(a b)", "a:b:c", "{title}: x"] {
-            search(&lib.db, &none, Request { q: qs.into(), limit: 10, ..Default::default() }).await.unwrap_or_else(|e| panic!("{qs}: {e}"));
+        for qs in [
+            "\"",
+            "*",
+            "**",
+            "NOT",
+            "(((",
+            "title:\"",
+            "a\"b",
+            "year:abc",
+            "in:",
+            "type:*",
+            "idea:",
+            "\" OR \"",
+            "[",
+            "%_",
+            "NEAR(a b)",
+            "a:b:c",
+            "{title}: x",
+        ] {
+            search(
+                &lib.db,
+                &none,
+                Request {
+                    q: qs.into(),
+                    limit: 10,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{qs}: {e}"));
         }
     }
 
@@ -680,7 +970,14 @@ mod tests {
         );
         let parsed = query::parse(&a.to_query());
         assert_eq!(parsed.idea_texts(), vec!["ambient, Berlin"]);
-        assert_eq!(Advanced { loan: "*".into(), ..Default::default() }.to_query(), "loan:*");
+        assert_eq!(
+            Advanced {
+                loan: "*".into(),
+                ..Default::default()
+            }
+            .to_query(),
+            "loan:*"
+        );
         assert_eq!(Advanced::default().to_query(), "");
     }
 }

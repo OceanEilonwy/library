@@ -47,7 +47,10 @@ impl BertEmbedder {
         let mut tokenizer = Tokenizer::from_file(dir.join("tokenizer.json"))
             .map_err(|e| anyhow::anyhow!("loading tokenizer: {e}"))?;
         tokenizer
-            .with_truncation(Some(TruncationParams { max_length: MAX_TOKENS, ..Default::default() }))
+            .with_truncation(Some(TruncationParams {
+                max_length: MAX_TOKENS,
+                ..Default::default()
+            }))
             .map_err(|e| anyhow::anyhow!("tokenizer truncation: {e}"))?;
         tokenizer.with_padding(Some(PaddingParams {
             strategy: PaddingStrategy::BatchLongest,
@@ -55,12 +58,19 @@ impl BertEmbedder {
         }));
         // SAFETY: the file is ours and is not modified while mapped.
         let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[dir.join("model.safetensors")], DType::F32, &device)?
+            VarBuilder::from_mmaped_safetensors(
+                &[dir.join("model.safetensors")],
+                DType::F32,
+                &device,
+            )?
         };
         let model = BertModel::load(vb, &config).context("loading BERT weights")?;
         let lower = model_id.to_lowercase();
         let (pooling, query_prefix) = if lower.contains("bge") {
-            (Pooling::Cls, "Represent this sentence for searching relevant passages: ")
+            (
+                Pooling::Cls,
+                "Represent this sentence for searching relevant passages: ",
+            )
         } else {
             (Pooling::Mean, "")
         };
@@ -95,7 +105,9 @@ impl BertEmbedder {
         let input_ids = Tensor::stack(&ids, 0)?;
         let attention_mask = Tensor::stack(&masks, 0)?;
         let token_type_ids = input_ids.zeros_like()?;
-        let hidden = self.model.forward(&input_ids, &token_type_ids, Some(&attention_mask))?;
+        let hidden = self
+            .model
+            .forward(&input_ids, &token_type_ids, Some(&attention_mask))?;
         let pooled = match self.pooling {
             Pooling::Cls => hidden.narrow(1, 0, 1)?.squeeze(1)?,
             Pooling::Mean => {
@@ -139,16 +151,28 @@ pub fn model_dir(models_dir: &Path, model_id: &str) -> PathBuf {
 
 /// Downloads any missing model files. Each file is written to a `.part`
 /// file first and renamed, so an interrupted download is retried cleanly.
-pub async fn ensure_downloaded(client: &reqwest::Client, hub_url: &str, model_id: &str, dir: &Path) -> Result<()> {
+pub async fn ensure_downloaded(
+    client: &reqwest::Client,
+    hub_url: &str,
+    model_id: &str,
+    dir: &Path,
+) -> Result<()> {
     tokio::fs::create_dir_all(dir).await?;
     for file in FILES {
         let dest = dir.join(file);
         if dest.exists() {
             continue;
         }
-        let url = format!("{}/{model_id}/resolve/main/{file}", hub_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/{model_id}/resolve/main/{file}",
+            hub_url.trim_end_matches('/')
+        );
         tracing::info!(%url, "downloading model file");
-        let resp = client.get(&url).send().await.with_context(|| format!("fetching {url}"))?;
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("fetching {url}"))?;
         if !resp.status().is_success() {
             bail!("{url} returned {}", resp.status());
         }

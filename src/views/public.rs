@@ -203,17 +203,43 @@ fn type_label(s: &Summary) -> String {
     if !s.format.is_empty() && s.format.len() <= 24 {
         s.format.clone()
     } else {
-        s.type_name.rsplit('·').next().unwrap_or(&s.type_name).trim().to_owned()
+        s.type_name
+            .rsplit('·')
+            .next()
+            .unwrap_or(&s.type_name)
+            .trim()
+            .to_owned()
     }
 }
 
-pub fn results_page(ctx: &Ctx, state: &SearchState, choices: &FilterChoices, results: &Results, offset: usize) -> Markup {
-    let title = if state.q.is_empty() { "Catalogue".to_owned() } else { format!("“{}”", state.q) };
-    page(ctx, &title, Header::Search(state.q.clone()), results_section(ctx, state, choices, results, offset))
+pub fn results_page(
+    ctx: &Ctx,
+    state: &SearchState,
+    choices: &FilterChoices,
+    results: &Results,
+    offset: usize,
+) -> Markup {
+    let title = if state.q.is_empty() {
+        "Catalogue".to_owned()
+    } else {
+        format!("“{}”", state.q)
+    };
+    page(
+        ctx,
+        &title,
+        Header::Search(state.q.clone()),
+        results_section(ctx, state, choices, results, offset),
+    )
 }
 
 /// The whole results area: filter sentence, counts, list, see-also.
-pub fn results_section(ctx: &Ctx, state: &SearchState, choices: &FilterChoices, results: &Results, offset: usize) -> Markup {
+pub fn results_section(
+    ctx: &Ctx,
+    state: &SearchState,
+    choices: &FilterChoices,
+    results: &Results,
+    offset: usize,
+) -> Markup {
     html! {
         section #results aria-live="polite" {
             (filter_sentence(ctx, state, choices))
@@ -316,7 +342,11 @@ fn filter_sentence(ctx: &Ctx, s: &SearchState, choices: &FilterChoices) -> Marku
 }
 
 pub fn counts_line(r: &Results) -> String {
-    let entries = if r.total == 1 { "1 entry".to_owned() } else { format!("{} entries", r.total) };
+    let entries = if r.total == 1 {
+        "1 entry".to_owned()
+    } else {
+        format!("{} entries", r.total)
+    };
     if r.has_text && r.by_idea > 0 {
         format!("{entries} · {} by name, {} by idea", r.by_name, r.by_idea)
     } else {
@@ -340,7 +370,13 @@ pub enum LoanUi<'a> {
     Open(Option<&'a str>),
 }
 
-pub fn result_row(ctx: &Ctx, s: &Summary, reason: Option<&str>, number: usize, loan: LoanUi) -> Markup {
+pub fn result_row(
+    ctx: &Ctx,
+    s: &Summary,
+    reason: Option<&str>,
+    number: usize,
+    loan: LoanUi,
+) -> Markup {
     let loan_open = matches!(loan, LoanUi::Open(_));
     let loan_error = match loan {
         LoanUi::Open(e) => e,
@@ -530,7 +566,11 @@ pub fn item_page(ctx: &Ctx, v: &ItemView, flash: Option<&str>) -> Markup {
 /// Lending status and form on an item's page.
 pub fn loan_panel(item_id: i64, title: &str, loans: &[Loan], error: Option<&str>) -> Markup {
     let active = loans.iter().find(|l| l.returned_at.is_none());
-    let past: Vec<&Loan> = loans.iter().filter(|l| l.returned_at.is_some()).take(10).collect();
+    let past: Vec<&Loan> = loans
+        .iter()
+        .filter(|l| l.returned_at.is_some())
+        .take(10)
+        .collect();
     html! {
         section #loan-panel.panel aria-labelledby="loan-title" {
             h2 #loan-title { "Lending" }
@@ -612,13 +652,22 @@ mod tests {
             availability: Availability::OnShelf,
             sort: Sort::Year,
         };
-        assert_eq!(s.query_string(20), "q=le+guin&type=book&place=3&decade=1960&avail=in&sort=year&offset=20");
+        assert_eq!(
+            s.query_string(20),
+            "q=le+guin&type=book&place=3&decade=1960&avail=in&sort=year&offset=20"
+        );
         assert_eq!(SearchState::default().query_string(0), "q=");
     }
 
     #[test]
     fn counts_wording() {
-        let mut r = Results { total: 7, by_name: 5, by_idea: 2, has_text: true, ..Default::default() };
+        let mut r = Results {
+            total: 7,
+            by_name: 5,
+            by_idea: 2,
+            has_text: true,
+            ..Default::default()
+        };
         assert_eq!(counts_line(&r), "7 entries · 5 by name, 2 by idea");
         r.by_idea = 0;
         r.total = 1;

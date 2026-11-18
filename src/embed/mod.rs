@@ -45,7 +45,11 @@ pub struct Thresholds {
 impl Default for Thresholds {
     /// Tuned for bge-small-en-v1.5, whose unrelated pairs sit around 0.5.
     fn default() -> Self {
-        Self { main: 0.74, see_also: 0.66, idea: 0.66 }
+        Self {
+            main: 0.74,
+            see_also: 0.66,
+            idea: 0.66,
+        }
     }
 }
 
@@ -68,6 +72,7 @@ impl Semantic {
         Self::default()
     }
 
+    #[cfg(test)]
     pub fn with(embedder: Arc<dyn Embedder>) -> Self {
         let s = Self::default();
         let _ = s.inner.embedder.set(embedder);
@@ -134,7 +139,8 @@ impl Semantic {
                 }
             }
             // Wait for a change, with an occasional sweep in case a wake-up was missed.
-            let _ = tokio::time::timeout(Duration::from_secs(300), self.inner.wake.notified()).await;
+            let _ =
+                tokio::time::timeout(Duration::from_secs(300), self.inner.wake.notified()).await;
         }
     }
 }
@@ -144,7 +150,8 @@ const BATCH: usize = 16;
 /// Embeds up to one batch of items that need it. Returns how many were done.
 pub async fn index_pending(db: &Db, emb: Arc<dyn Embedder>) -> Result<usize> {
     let (model, dim) = (emb.model_id().to_owned(), emb.dim());
-    db.write(move |c| db::ensure_vector_table(c, &model, dim)).await?;
+    db.write(move |c| db::ensure_vector_table(c, &model, dim))
+        .await?;
     let batch: Vec<(i64, String)> = db
         .read(|c| {
             let ids = items::needing_embedding(c, BATCH)?;
@@ -222,7 +229,10 @@ fn store_vector(conn: &Connection, id: i64, v: &[f32], hash: &str) -> Result<()>
         "INSERT INTO item_vectors (rowid, embedding) VALUES (?1, ?2)",
         params![id, to_blob(v)],
     )?;
-    conn.execute("UPDATE items SET embed_hash = ?2 WHERE id = ?1", params![id, hash])?;
+    conn.execute(
+        "UPDATE items SET embed_hash = ?2 WHERE id = ?1",
+        params![id, hash],
+    )?;
     Ok(())
 }
 
@@ -247,10 +257,16 @@ pub fn item_vector(conn: &Connection, id: i64) -> Result<Option<Vec<f32>>> {
     }
     use rusqlite::OptionalExtension;
     let blob: Option<Vec<u8>> = conn
-        .query_row("SELECT embedding FROM item_vectors WHERE rowid = ?1", [id], |r| r.get(0))
+        .query_row(
+            "SELECT embedding FROM item_vectors WHERE rowid = ?1",
+            [id],
+            |r| r.get(0),
+        )
         .optional()?;
     Ok(blob.map(|b| {
-        b.chunks_exact(4)
+        b.as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect()
     }))
@@ -272,8 +288,13 @@ pub mod fake {
     pub struct FakeEmbedder;
 
     const GROUPS: &[&[&str]] = &[
-        &["sea", "ocean", "whale", "whaling", "fish", "water", "sailing", "voyage", "swimming", "island", "islands"],
-        &["wizard", "magic", "dragon", "dragons", "fantasy", "quest", "spell"],
+        &[
+            "sea", "ocean", "whale", "whaling", "fish", "water", "sailing", "voyage", "swimming",
+            "island", "islands",
+        ],
+        &[
+            "wizard", "magic", "dragon", "dragons", "fantasy", "quest", "spell",
+        ],
         &["tent", "camping", "stove", "hiking", "outdoors", "rucksack"],
         &["flying", "kite", "wind", "aircraft", "flight"],
     ];
@@ -285,13 +306,18 @@ pub mod fake {
                 return i;
             }
         }
-        let h = word.bytes().fold(7usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize));
+        let h = word
+            .bytes()
+            .fold(7usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize));
         GROUPS.len() + h % (DIM - GROUPS.len())
     }
 
     fn embed(text: &str) -> Vec<f32> {
         let mut v = vec![0.0f32; DIM];
-        for w in crate::util::normalize(text).split(' ').filter(|w| w.len() > 2) {
+        for w in crate::util::normalize(text)
+            .split(' ')
+            .filter(|w| w.len() > 2)
+        {
             v[axis(w)] += 1.0;
         }
         normalize(&mut v);
@@ -312,7 +338,11 @@ pub mod fake {
             Ok(texts.iter().map(|t| embed(t)).collect())
         }
         fn thresholds(&self) -> Thresholds {
-            Thresholds { main: 0.4, see_also: 0.2, idea: 0.25 }
+            Thresholds {
+                main: 0.4,
+                see_also: 0.2,
+                idea: 0.25,
+            }
         }
     }
 }
@@ -338,7 +368,11 @@ mod tests {
             .unwrap();
         let n = index_all_blocking(&db, &FakeEmbedder).unwrap();
         assert_eq!(n, 2);
-        assert_eq!(index_all_blocking(&db, &FakeEmbedder).unwrap(), 0, "nothing left to do");
+        assert_eq!(
+            index_all_blocking(&db, &FakeEmbedder).unwrap(),
+            0,
+            "nothing left to do"
+        );
         let q = FakeEmbedder.embed_query("ocean").unwrap();
         let near = db.read_blocking(|c| neighbours(c, &q, 2)).unwrap();
         assert_eq!(near[0].0, moby);
@@ -351,9 +385,12 @@ mod tests {
     #[test]
     fn editing_an_item_queues_it_again() {
         let (db, _d) = temp_db();
-        let id = db.write_blocking(|c| create(c, &input(c, "Kite", ""))).unwrap();
+        let id = db
+            .write_blocking(|c| create(c, &input(c, "Kite", "")))
+            .unwrap();
         index_all_blocking(&db, &FakeEmbedder).unwrap();
-        db.write_blocking(|c| crate::db::items::update(c, id, &input(c, "Kite, diamond", ""))).unwrap();
+        db.write_blocking(|c| crate::db::items::update(c, id, &input(c, "Kite, diamond", "")))
+            .unwrap();
         assert_eq!(index_all_blocking(&db, &FakeEmbedder).unwrap(), 1);
     }
 
@@ -362,7 +399,9 @@ mod tests {
         let (db, _d) = temp_db();
         let sem = Semantic::with(Arc::new(FakeEmbedder));
         tokio::spawn(sem.clone().run_indexer(db.clone()));
-        db.write(|c| create(c, &input(c, "Moby-Dick", ""))).await.unwrap();
+        db.write(|c| create(c, &input(c, "Moby-Dick", "")))
+            .await
+            .unwrap();
         sem.poke();
         for _ in 0..100 {
             let pending = db.read(|c| items::needing_embedding(c, 10)).await.unwrap();

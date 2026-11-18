@@ -19,7 +19,10 @@ impl Invalid {
         self.0.push((field.to_owned(), msg.into()));
     }
     pub fn get(&self, field: &str) -> Option<&str> {
-        self.0.iter().find(|(f, _)| f == field).map(|(_, m)| m.as_str())
+        self.0
+            .iter()
+            .find(|(f, _)| f == field)
+            .map(|(_, m)| m.as_str())
     }
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
@@ -118,7 +121,8 @@ impl Item {
     }
 }
 
-const ITEM_SELECT: &str = "SELECT i.id, i.type_id, t.name, t.slug, t.creator_label, i.title, i.creator, i.year,
+const ITEM_SELECT: &str =
+    "SELECT i.id, i.type_id, t.name, t.slug, t.creator_label, i.title, i.creator, i.year,
         i.publisher, i.format, i.identifier, i.description, i.tags, i.notes, i.location_id,
         l.path, i.created_at, i.updated_at
     FROM items i JOIN media_types t ON t.id = i.type_id
@@ -185,7 +189,9 @@ fn validate(conn: &Connection, input: &ItemInput, item_id: Option<i64>) -> Resul
     let defs = types::fields_for(conn, input.type_id, item_id)?;
     let mut fields = Vec::new();
     for (field_id, raw) in &input.fields {
-        let Some(def) = defs.iter().find(|d| d.id == *field_id) else { continue };
+        let Some(def) = defs.iter().find(|d| d.id == *field_id) else {
+            continue;
+        };
         match def.kind.validate(raw, &def.options) {
             Ok(Some(v)) => fields.push((def.id, v)),
             Ok(None) => {}
@@ -219,8 +225,18 @@ pub fn create(conn: &mut Connection, input: &ItemInput) -> Result<i64> {
                             description, tags, notes, location_id, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
         params![
-            input.type_id, v.title, v.creator, v.year, v.publisher, v.format, v.identifier,
-            v.description, v.tags, v.notes, location, ts
+            input.type_id,
+            v.title,
+            v.creator,
+            v.year,
+            v.publisher,
+            v.format,
+            v.identifier,
+            v.description,
+            v.tags,
+            v.notes,
+            location,
+            ts
         ],
     )?;
     let id = tx.last_insert_rowid();
@@ -240,8 +256,19 @@ pub fn update(conn: &mut Connection, id: i64, input: &ItemInput) -> Result<()> {
                 location_id = ?12, updated_at = ?13, embed_hash = NULL
          WHERE id = ?1",
         params![
-            id, input.type_id, v.title, v.creator, v.year, v.publisher, v.format, v.identifier,
-            v.description, v.tags, v.notes, location, now()
+            id,
+            input.type_id,
+            v.title,
+            v.creator,
+            v.year,
+            v.publisher,
+            v.format,
+            v.identifier,
+            v.description,
+            v.tags,
+            v.notes,
+            location,
+            now()
         ],
     )?;
     if changed == 0 {
@@ -259,8 +286,8 @@ fn write_fields(tx: &Transaction, id: i64, fields: &[(i64, String)], fresh: bool
         // item changed type) are removed; item-only field defs stay.
         tx.execute("DELETE FROM item_fields WHERE item_id = ?1", [id])?;
     }
-    let mut stmt =
-        tx.prepare_cached("INSERT INTO item_fields (item_id, field_id, value) VALUES (?1, ?2, ?3)")?;
+    let mut stmt = tx
+        .prepare_cached("INSERT INTO item_fields (item_id, field_id, value) VALUES (?1, ?2, ?3)")?;
     for (field, value) in fields {
         stmt.execute(params![id, field, value])?;
     }
@@ -310,7 +337,9 @@ pub fn get(conn: &Connection, id: i64) -> Result<Option<Item>> {
 
 /// User-defined field values for an item, with their definitions.
 pub fn field_values(conn: &Connection, id: i64) -> Result<Vec<(FieldDef, String)>> {
-    let Some(item) = get(conn, id)? else { return Ok(Vec::new()) };
+    let Some(item) = get(conn, id)? else {
+        return Ok(Vec::new());
+    };
     let defs = types::fields_for(conn, item.type_id, Some(id))?;
     let values: HashMap<i64, String> = conn
         .prepare_cached("SELECT field_id, value FROM item_fields WHERE item_id = ?1")?
@@ -350,7 +379,9 @@ fn summary_from_row(r: &Row) -> rusqlite::Result<Summary> {
         tags: r.get(14)?,
         created_at: r.get(15)?,
         location_path: r.get(7)?,
-        loan: borrower.zip(since).map(|(borrower, since)| ActiveLoan { borrower, since }),
+        loan: borrower
+            .zip(since)
+            .map(|(borrower, since)| ActiveLoan { borrower, since }),
         photo_count: r.get(10)?,
         first_photo: r.get(11)?,
         first_photo_caption: r.get(12)?,
@@ -383,7 +414,9 @@ pub fn count(conn: &Connection) -> Result<i64> {
 
 /// The text fed to the embedding model for an item.
 pub fn embedding_text(conn: &Connection, id: i64) -> Result<Option<String>> {
-    let Some(item) = get(conn, id)? else { return Ok(None) };
+    let Some(item) = get(conn, id)? else {
+        return Ok(None);
+    };
     let fields = field_values(conn, id)?;
     let mut parts = vec![item.title.clone()];
     if !item.creator.is_empty() {
@@ -445,18 +478,27 @@ pub(crate) mod tests {
             let item = get(c, id)?.unwrap();
             assert_eq!(item.title, "The Hobbit");
             assert_eq!(item.year, Some(1995));
-            assert_eq!(item.location_path.as_deref(), Some("Lounge › Bookcase 1 › Shelf 4"));
+            assert_eq!(
+                item.location_path.as_deref(),
+                Some("Lounge › Bookcase 1 › Shelf 4")
+            );
             assert_eq!(item.creator_label, "Author");
 
-            let hits: i64 =
-                c.query_row("SELECT count(*) FROM items_fts WHERE items_fts MATCH 'dragons'", [], |r| r.get(0))?;
+            let hits: i64 = c.query_row(
+                "SELECT count(*) FROM items_fts WHERE items_fts MATCH 'dragons'",
+                [],
+                |r| r.get(0),
+            )?;
             assert_eq!(hits, 1);
 
             inp.title = "The Hobbit (illustrated)".into();
             inp.tags = "fantasy".into();
             update(c, id, &inp)?;
-            let hits: i64 =
-                c.query_row("SELECT count(*) FROM items_fts WHERE items_fts MATCH 'dragons'", [], |r| r.get(0))?;
+            let hits: i64 = c.query_row(
+                "SELECT count(*) FROM items_fts WHERE items_fts MATCH 'dragons'",
+                [],
+                |r| r.get(0),
+            )?;
             assert_eq!(hits, 0, "fts follows updates");
             assert_eq!(get(c, id)?.unwrap().title, "The Hobbit (illustrated)");
 
@@ -483,7 +525,12 @@ pub(crate) mod tests {
             inp.title = "x".into();
             inp.year = "".into();
             let err = create(c, &inp).unwrap_err();
-            assert!(err.downcast_ref::<Invalid>().unwrap().get("type_id").is_some());
+            assert!(
+                err.downcast_ref::<Invalid>()
+                    .unwrap()
+                    .get("type_id")
+                    .is_some()
+            );
             Ok(())
         })
         .unwrap();
@@ -494,31 +541,60 @@ pub(crate) mod tests {
         let (db, _d) = temp_db();
         db.write_blocking(|c| {
             let b = book(c);
-            let series = types::create_field(c, FieldScope::Type(b), "Series", FieldKind::Text, "")?;
-            let signed = types::create_field(c, FieldScope::Type(b), "Signed", FieldKind::Bool, "")?;
-            let pages = types::create_field(c, FieldScope::Type(b), "Pages", FieldKind::Number, "")?;
+            let series =
+                types::create_field(c, FieldScope::Type(b), "Series", FieldKind::Text, "")?;
+            let signed =
+                types::create_field(c, FieldScope::Type(b), "Signed", FieldKind::Bool, "")?;
+            let pages =
+                types::create_field(c, FieldScope::Type(b), "Pages", FieldKind::Number, "")?;
             let mut inp = input(c, "Mort", "Terry Pratchett");
-            inp.fields = vec![(series.id, "Discworld".into()), (signed.id, "on".into()), (pages.id, "".into())];
+            inp.fields = vec![
+                (series.id, "Discworld".into()),
+                (signed.id, "on".into()),
+                (pages.id, "".into()),
+            ];
             let id = create(c, &inp)?;
             let vals = field_values(c, id)?;
             assert_eq!(vals.len(), 3);
-            assert_eq!(vals.iter().find(|(d, _)| d.id == series.id).unwrap().1, "Discworld");
-            assert_eq!(vals.iter().find(|(d, _)| d.id == signed.id).unwrap().1, "yes");
-            let hits: i64 =
-                c.query_row("SELECT count(*) FROM items_fts WHERE items_fts MATCH 'discworld'", [], |r| r.get(0))?;
+            assert_eq!(
+                vals.iter().find(|(d, _)| d.id == series.id).unwrap().1,
+                "Discworld"
+            );
+            assert_eq!(
+                vals.iter().find(|(d, _)| d.id == signed.id).unwrap().1,
+                "yes"
+            );
+            let hits: i64 = c.query_row(
+                "SELECT count(*) FROM items_fts WHERE items_fts MATCH 'discworld'",
+                [],
+                |r| r.get(0),
+            )?;
             assert_eq!(hits, 1);
 
             inp.fields = vec![(pages.id, "many".into())];
             let err = update(c, id, &inp).unwrap_err();
-            assert!(err.downcast_ref::<Invalid>().unwrap().get(&format!("field_{}", pages.id)).is_some());
+            assert!(
+                err.downcast_ref::<Invalid>()
+                    .unwrap()
+                    .get(&format!("field_{}", pages.id))
+                    .is_some()
+            );
 
             // Item-only field.
-            let only = types::create_field(c, FieldScope::Item(id), "Inscription", FieldKind::Text, "")?;
+            let only =
+                types::create_field(c, FieldScope::Item(id), "Inscription", FieldKind::Text, "")?;
             inp.fields = vec![(only.id, "To Kasia".into())];
             update(c, id, &inp)?;
             let vals = field_values(c, id)?;
-            assert_eq!(vals.iter().find(|(d, _)| d.id == only.id).unwrap().1, "To Kasia");
-            assert!(types::fields_for(c, b, None)?.iter().all(|d| d.id != only.id));
+            assert_eq!(
+                vals.iter().find(|(d, _)| d.id == only.id).unwrap().1,
+                "To Kasia"
+            );
+            assert!(
+                types::fields_for(c, b, None)?
+                    .iter()
+                    .all(|d| d.id != only.id)
+            );
             Ok(())
         })
         .unwrap();
@@ -554,7 +630,11 @@ pub(crate) mod tests {
             inp.description = "confessional folk".into();
             let id = create(c, &inp)?;
             let text = embedding_text(c, id)?.unwrap();
-            assert!(text.contains("Blue") && text.contains("Author: Joni Mitchell") && text.contains("folk"));
+            assert!(
+                text.contains("Blue")
+                    && text.contains("Author: Joni Mitchell")
+                    && text.contains("folk")
+            );
             assert_eq!(needing_embedding(c, 10)?, vec![id]);
             Ok(())
         })

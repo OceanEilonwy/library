@@ -94,6 +94,7 @@ pub fn get(conn: &Connection, id: i64) -> Result<Option<MediaType>> {
         .optional()?)
 }
 
+#[cfg(test)]
 pub fn by_slug(conn: &Connection, slug: &str) -> Result<Option<MediaType>> {
     Ok(conn
         .prepare_cached(&format!("SELECT {COLS} FROM media_types WHERE slug = ?1"))?
@@ -144,7 +145,14 @@ pub fn create(conn: &Connection, t: &NewType) -> Result<MediaType> {
     conn.execute(
         "INSERT INTO media_types (name, slug, section, lookup, creator_label, position)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![name, slug, section, t.lookup.as_str(), creator_label, position],
+        params![
+            name,
+            slug,
+            section,
+            t.lookup.as_str(),
+            creator_label,
+            position
+        ],
     )?;
     Ok(get(conn, conn.last_insert_rowid())?.expect("just inserted"))
 }
@@ -215,8 +223,8 @@ impl FieldKind {
                 if !n.is_finite() {
                     bail!("“{v}” is not a number.");
                 }
-                let s = n.to_string();
-                s
+
+                n.to_string()
             }
             FieldKind::Date => {
                 let d: jiff::civil::Date = v
@@ -351,7 +359,12 @@ mod tests {
         db.write_blocking(|c| {
             let t = create(
                 c,
-                &NewType { name: "Equipment · Sports", section: "", lookup: Lookup::Product, creator_label: "" },
+                &NewType {
+                    name: "Equipment · Sports",
+                    section: "",
+                    lookup: Lookup::Product,
+                    creator_label: "",
+                },
             )?;
             assert_eq!(t.slug, "equipment-sports");
             assert_eq!(t.section, "Sports");
@@ -359,10 +372,26 @@ mod tests {
             assert!(by_slug(c, "equipment-sports")?.is_some());
             let dup = create(
                 c,
-                &NewType { name: "equipment · sports", section: "", lookup: Lookup::None, creator_label: "" },
+                &NewType {
+                    name: "equipment · sports",
+                    section: "",
+                    lookup: Lookup::None,
+                    creator_label: "",
+                },
             );
             assert!(dup.is_err());
-            assert!(create(c, &NewType { name: " ", section: "", lookup: Lookup::None, creator_label: "" }).is_err());
+            assert!(
+                create(
+                    c,
+                    &NewType {
+                        name: " ",
+                        section: "",
+                        lookup: Lookup::None,
+                        creator_label: ""
+                    }
+                )
+                .is_err()
+            );
             Ok(())
         })
         .unwrap();
@@ -384,9 +413,19 @@ mod tests {
         db.write_blocking(|c| {
             let book = by_slug(c, "book")?.unwrap();
             create_field(c, FieldScope::Type(book.id), "Signed", FieldKind::Bool, "")?;
-            assert!(create_field(c, FieldScope::Type(book.id), "signed", FieldKind::Text, "").is_err());
-            assert!(create_field(c, FieldScope::Type(book.id), "Fuel", FieldKind::Choice, "").is_err());
-            let fuel = create_field(c, FieldScope::Type(book.id), "Fuel", FieldKind::Choice, "Meths, Gas")?;
+            assert!(
+                create_field(c, FieldScope::Type(book.id), "signed", FieldKind::Text, "").is_err()
+            );
+            assert!(
+                create_field(c, FieldScope::Type(book.id), "Fuel", FieldKind::Choice, "").is_err()
+            );
+            let fuel = create_field(
+                c,
+                FieldScope::Type(book.id),
+                "Fuel",
+                FieldKind::Choice,
+                "Meths, Gas",
+            )?;
             assert_eq!(fuel.options, vec!["Meths", "Gas"]);
             let fields = fields_for(c, book.id, None)?;
             assert_eq!(fields.len(), 2);
@@ -398,13 +437,28 @@ mod tests {
     #[test]
     fn field_value_validation() {
         let opts = vec!["Meths".to_owned(), "Gas".to_owned()];
-        assert_eq!(FieldKind::Number.validate("1,5", &[]).unwrap().as_deref(), Some("1.5"));
+        assert_eq!(
+            FieldKind::Number.validate("1,5", &[]).unwrap().as_deref(),
+            Some("1.5")
+        );
         assert!(FieldKind::Number.validate("heavy", &[]).is_err());
-        assert_eq!(FieldKind::Date.validate("2026-03-01", &[]).unwrap().as_deref(), Some("2026-03-01"));
+        assert_eq!(
+            FieldKind::Date
+                .validate("2026-03-01", &[])
+                .unwrap()
+                .as_deref(),
+            Some("2026-03-01")
+        );
         assert!(FieldKind::Date.validate("March", &[]).is_err());
-        assert_eq!(FieldKind::Choice.validate("Gas", &opts).unwrap().as_deref(), Some("Gas"));
+        assert_eq!(
+            FieldKind::Choice.validate("Gas", &opts).unwrap().as_deref(),
+            Some("Gas")
+        );
         assert!(FieldKind::Choice.validate("Petrol", &opts).is_err());
-        assert_eq!(FieldKind::Bool.validate("on", &[]).unwrap().as_deref(), Some("yes"));
+        assert_eq!(
+            FieldKind::Bool.validate("on", &[]).unwrap().as_deref(),
+            Some("yes")
+        );
         assert_eq!(FieldKind::Bool.validate("no", &[]).unwrap(), None);
         assert_eq!(FieldKind::Text.validate("   ", &[]).unwrap(), None);
     }

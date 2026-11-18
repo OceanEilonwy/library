@@ -16,12 +16,26 @@ pub struct Photo {
     pub caption: String,
 }
 
-pub fn add(conn: &Connection, item_id: i64, file: &str, width: u32, height: u32, caption: &str) -> Result<i64> {
+pub fn add(
+    conn: &Connection,
+    item_id: i64,
+    file: &str,
+    width: u32,
+    height: u32,
+    caption: &str,
+) -> Result<i64> {
     conn.execute(
         "INSERT INTO photos (item_id, file, width, height, caption, created_at, position)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6,
                  (SELECT coalesce(max(position), 0) + 1 FROM photos WHERE item_id = ?1))",
-        params![item_id, file, width, height, util::clean(caption, 120), now()],
+        params![
+            item_id,
+            file,
+            width,
+            height,
+            util::clean(caption, 120),
+            now()
+        ],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -82,7 +96,10 @@ mod tests {
             let id = items::create(c, &input(c, "Tent", ""))?;
             let a = add(c, id, "a.jpg", 10, 20, "front")?;
             let b = add(c, id, "b.jpg", 10, 20, "")?;
-            assert_eq!(for_item(c, id)?.iter().map(|p| p.id).collect::<Vec<_>>(), vec![a, b]);
+            assert_eq!(
+                for_item(c, id)?.iter().map(|p| p.id).collect::<Vec<_>>(),
+                vec![a, b]
+            );
             make_first(c, id, b)?;
             assert_eq!(for_item(c, id)?[0].id, b);
             assert_eq!(remove(c, id, a)?.as_deref(), Some("a.jpg"));

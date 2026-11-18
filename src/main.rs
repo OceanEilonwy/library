@@ -25,7 +25,13 @@ use embed::Semantic;
 #[command(version, about = "A home library catalogue")]
 struct Cli {
     /// Path to the config file.
-    #[arg(short, long, env = "LIBRARY_CONFIG", default_value = "library.toml", global = true)]
+    #[arg(
+        short,
+        long,
+        env = "LIBRARY_CONFIG",
+        default_value = "library.toml",
+        global = true
+    )]
     config: PathBuf,
     #[command(subcommand)]
     command: Option<Command>,
@@ -36,7 +42,11 @@ enum Command {
     /// Run the web server (the default).
     Serve,
     /// Hash an admin password for the config file.
-    HashPassword,
+    HashPassword {
+        /// Read the password from standard input instead of prompting.
+        #[arg(long)]
+        stdin: bool,
+    },
     /// Rebuild the full-text index and re-embed every item.
     Reindex,
     /// Write a consistent copy of the database to a file.
@@ -54,10 +64,13 @@ fn main() -> Result<()> {
         .init();
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Serve) {
-        Command::HashPassword => hash_password(),
+        Command::HashPassword { stdin } => hash_password(stdin),
         Command::Serve => {
             let cfg = Config::load(&cli.config)?;
-            tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(serve(cfg))
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?
+                .block_on(serve(cfg))
         }
         Command::Reindex => {
             let cfg = Config::load(&cli.config)?;
@@ -72,25 +85,44 @@ fn main() -> Result<()> {
         }
         Command::FetchModel => {
             let cfg = Config::load(&cli.config)?;
-            tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(async {
-                let client = reqwest::Client::builder().user_agent("home-library").build()?;
-                let dir = embed::bert::model_dir(&cfg.models_dir(), &cfg.semantic.model);
-                embed::bert::ensure_downloaded(&client, &cfg.semantic.hub_url, &cfg.semantic.model, &dir).await?;
-                println!("Model ready in {}", dir.display());
-                Ok(())
-            })
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?
+                .block_on(async {
+                    let client = reqwest::Client::builder()
+                        .user_agent("home-library")
+                        .build()?;
+                    let dir = embed::bert::model_dir(&cfg.models_dir(), &cfg.semantic.model);
+                    embed::bert::ensure_downloaded(
+                        &client,
+                        &cfg.semantic.hub_url,
+                        &cfg.semantic.model,
+                        &dir,
+                    )
+                    .await?;
+                    println!("Model ready in {}", dir.display());
+                    Ok(())
+                })
         }
     }
 }
 
-fn hash_password() -> Result<()> {
-    let pw = rpassword::prompt_password("Admin password: ")?;
+fn hash_password(stdin: bool) -> Result<()> {
+    let pw = if stdin {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        line.trim_end_matches(['\r', '\n']).to_owned()
+    } else {
+        rpassword::prompt_password("Admin password: ")?
+    };
     if pw.chars().count() < 8 {
         anyhow::bail!("Use at least 8 characters.");
     }
-    let again = rpassword::prompt_password("Again: ")?;
-    if pw != again {
-        anyhow::bail!("The two passwords differ.");
+    if !stdin {
+        let again = rpassword::prompt_password("Again: ")?;
+        if pw != again {
+            anyhow::bail!("The two passwords differ.");
+        }
     }
     let hash = web::auth::hash_password(&pw)?;
     println!("\nAdd this line to your config file:\n\nadmin_password_hash = \"{hash}\"\n");
@@ -100,7 +132,10 @@ fn hash_password() -> Result<()> {
 fn reindex(cfg: Config) -> Result<()> {
     let db = Db::open(&cfg.db_path())?;
     let n = db.write_blocking(|c| {
-        let ids: Vec<i64> = c.prepare("SELECT id FROM items")?.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        let ids: Vec<i64> = c
+            .prepare("SELECT id FROM items")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
         let tx = c.transaction()?;
         tx.execute("DELETE FROM items_fts", [])?;
         for id in &ids {
@@ -122,12 +157,15 @@ fn reindex(cfg: Config) -> Result<()> {
 }
 
 async fn serve(cfg: Config) -> Result<()> {
-    std::fs::create_dir_all(&cfg.data_dir).with_context(|| format!("creating {}", cfg.data_dir.display()))?;
+    std::fs::create_dir_all(&cfg.data_dir)
+        .with_context(|| format!("creating {}", cfg.data_dir.display()))?;
     std::fs::create_dir_all(cfg.photos_dir())?;
     let db = Db::open(&cfg.db_path())?;
     let key = web::auth::Auth::load_or_create_key(&cfg.secret_path())?;
     if cfg.admin_password_hash.is_none() {
-        tracing::warn!("no admin_password_hash in the config: editing is disabled (run `library hash-password`)");
+        tracing::warn!(
+            "no admin_password_hash in the config: editing is disabled (run `library hash-password`)"
+        );
     }
     let auth = web::auth::Auth::new(key, cfg.admin_password_hash.clone());
     let lookups = lookup::Lookups::new(cfg.lookup.clone())?;
@@ -140,12 +178,21 @@ async fn serve(cfg: Config) -> Result<()> {
         let (cfg2, sem2, client) = (cfg.clone(), semantic.clone(), lookups.client().clone());
         tokio::spawn(async move {
             let dir = embed::bert::model_dir(&cfg2.models_dir(), &cfg2.semantic.model);
-            if let Err(e) = embed::bert::ensure_downloaded(&client, &cfg2.semantic.hub_url, &cfg2.semantic.model, &dir).await {
+            if let Err(e) = embed::bert::ensure_downloaded(
+                &client,
+                &cfg2.semantic.hub_url,
+                &cfg2.semantic.model,
+                &dir,
+            )
+            .await
+            {
                 tracing::error!(error = %e, "could not download the embedding model; meaning search is off");
                 return;
             }
             let model = cfg2.semantic.model.clone();
-            match tokio::task::spawn_blocking(move || embed::bert::BertEmbedder::load(&model, &dir)).await {
+            match tokio::task::spawn_blocking(move || embed::bert::BertEmbedder::load(&model, &dir))
+                .await
+            {
                 Ok(Ok(e)) => {
                     tracing::info!(model = %cfg2.semantic.model, "embedding model loaded");
                     sem2.install(Arc::new(e));
@@ -171,6 +218,8 @@ async fn serve(cfg: Config) -> Result<()> {
         .await
         .with_context(|| format!("listening on {}", cfg.listen))?;
     tracing::info!(addr = %cfg.listen, "library is open");
-    axum::serve(listener, app).with_graceful_shutdown(web::shutdown_signal()).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(web::shutdown_signal())
+        .await?;
     Ok(())
 }

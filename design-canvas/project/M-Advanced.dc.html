@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mobile — Advanced search</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,800;1,9..144,300&amp;family=Instrument+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#fbf8f2}
+a{color:#a4553b}a:hover{color:#7d3d28}
+input::placeholder{color:#8b8f90;font-style:italic}
+</style>
+</helmet>
+<div style="width: 390px; min-height: 1400px; box-sizing: border-box; padding: 0 16px 32px; background: #fbf8f2; color: #1f2629; font-family: 'Instrument Sans', sans-serif; display: flex; flex-direction: column; gap: 22px">
+  <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 4px double #1f2629; padding: 8px 0">
+    <a href="M-Landing.dc.html" aria-label="Back" style="font-family: 'Fraunces', serif; font-size: 28px; color: #1f2629; text-decoration: none; width: 44px; height: 44px; display: flex; align-items: center">←</a>
+    <h1 style="margin: 0; font-family: 'Fraunces', serif; font-weight: 500; font-size: 24px">Advanced search</h1>
+    <button type="button" style="font: inherit; font-size: 14px; background: none; border: 0; color: #1f2629; text-decoration: underline; min-height: 44px; cursor: pointer">Reset</button>
+  </div>
+
+  <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Title
+    <input value="the * of *" style="font-family: 'Fraunces', serif; font-weight: 300; font-size: 24px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 6px 0; color: #1f2629"></label>
+  <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Author, artist or director
+    <input value="Miyazaki" style="font-family: 'Fraunces', serif; font-weight: 300; font-size: 24px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 6px 0; color: #1f2629"></label>
+  <div style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Released
+    <div style="display: flex; align-items: baseline; gap: 12px; font-family: 'Fraunces', serif; font-weight: 300; font-size: 24px; text-transform: none; letter-spacing: 0">
+      <input aria-label="From" inputmode="numeric" value="1984" style="font: inherit; width: 100px; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 6px 0; color: #1f2629"><i>to</i>
+      <input aria-label="To" inputmode="numeric" value="2001" style="font: inherit; width: 100px; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 6px 0; color: #1f2629"></div></div>
+  <fieldset style="border: 0; padding: 0; margin: 0">
+    <legend style="font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; padding: 0; margin-bottom: 10px">Media</legend>
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px">
+      <label style="display: flex; gap: 10px; align-items: center; border: 1px solid #1f2629; padding: 0 12px; min-height: 48px"><input type="checkbox" style="width: 20px; height: 20px; accent-color: #a4553b"> Books</label>
+      <label style="display: flex; gap: 10px; align-items: center; border: 1px solid #1f2629; padding: 0 12px; min-height: 48px; background: #1f2629; color: #fbf8f2"><input type="checkbox" checked style="width: 20px; height: 20px; accent-color: #a4553b"> DVD</label>
+      <label style="display: flex; gap: 10px; align-items: center; border: 1px solid #1f2629; padding: 0 12px; min-height: 48px"><input type="checkbox" style="width: 20px; height: 20px; accent-color: #a4553b"> Music</label>
+      <label style="display: flex; gap: 10px; align-items: center; border: 1px solid #1f2629; padding: 0 12px; min-height: 48px"><input type="checkbox" style="width: 20px; height: 20px; accent-color: #a4553b"> Equipment</label>
+    </div></fieldset>
+  <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">On loan to
+    <input value="" placeholder="* for anyone" style="font-family: 'Fraunces', serif; font-weight: 300; font-size: 24px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 6px 0; color: #1f2629"></label>
+  <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Idea or mood — by meaning
+    <input value="gentle, flying machines, growing up" style="font-family: 'Fraunces', serif; font-style: italic; font-weight: 300; font-size: 24px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 6px 0; color: #1f2629"></label>
+  <label style="display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Query, as text
+    <textarea rows="3" style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; letter-spacing: 0; text-transform: none; border: 1px solid #1f2629; background: #fff; padding: 12px; color: #1f2629; resize: vertical">creator:miyazaki AND year:1984..2001 AND type:dvd AND idea:"gentle, flying machines"</textarea></label>
+
+  <details open="" style="border-top: 1px solid #1f2629; border-bottom: 1px solid #1f2629; padding-bottom: 14px">
+    <summary style="font-size: 12px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; min-height: 48px; display: flex; align-items: center; cursor: pointer">Search grammar</summary>
+  <dl style="margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 10px 14px; font-size: 15px; line-height: 1.4">
+    <dt style="font-family: 'IBM Plex Mono', monospace; color: #a4553b">sea*</dt><dd style="margin: 0">sea, seas, seaside…</dd>
+    <dt style="font-family: 'IBM Plex Mono', monospace; color: #a4553b">gr?y</dt><dd style="margin: 0">grey or gray</dd>
+    <dt style="font-family: 'IBM Plex Mono', monospace; color: #a4553b">AND OR NOT</dt><dd style="margin: 0">combine; group with ( )</dd>
+    <dt style="font-family: 'IBM Plex Mono', monospace; color: #a4553b">"…"</dt><dd style="margin: 0">exact phrase</dd>
+    <dt style="font-family: 'IBM Plex Mono', monospace; color: #a4553b">year:</dt><dd style="margin: 0">1990 or 1984..2001</dd>
+    <dt style="font-family: 'IBM Plex Mono', monospace; color: #a4553b">idea:</dt><dd style="margin: 0">matched by meaning</dd>
+    <dt style="font-family: 'IBM Plex Mono', monospace; color: #a4553b">in:</dt><dd style="margin: 0">a place, e.g. in:shed</dd>
+    <dt style="font-family: 'IBM Plex Mono', monospace; color: #a4553b">loan:*</dt><dd style="margin: 0">anything lent out; loan:sam</dd>
+  </dl>
+  </details>
+
+  <a href="M-Results.dc.html" style="position: sticky; bottom: 16px; margin-top: 8px; background: #1f2629; color: #fbf8f2; text-decoration: none; font-weight: 600; font-size: 17px; min-height: 54px; display: flex; align-items: center; justify-content: center">Search</a>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":1400}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

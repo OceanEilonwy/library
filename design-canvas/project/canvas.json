@@ -1,0 +1,127 @@
+{
+  "v": 3,
+  "createdOnFiles": {
+    "v": 1,
+    "at": "2026-11-18T18:40:00Z"
+  },
+  "title": "Library Catalogue Designs",
+  "launch": {
+    "view": "canvas"
+  },
+  "pages": [],
+  "boards": {
+    "C-Landing.dc.html": {
+      "x": 0,
+      "y": 0,
+      "w": 1280,
+      "h": 1240,
+      "title": "Desktop — Landing (advanced search collapsed) + admin unlock",
+      "expand": "fill",
+      "is_interactive": true
+    },
+    "C-Results.dc.html": {
+      "x": 1360,
+      "y": 0,
+      "w": 1280,
+      "h": 1300,
+      "title": "Desktop — Results with sentence filters + inline loan",
+      "expand": "fill"
+    },
+    "C-Add.dc.html": {
+      "x": 2720,
+      "y": 0,
+      "w": 1280,
+      "h": 1300,
+      "title": "Desktop — Add item (CD) + duplicate note",
+      "expand": "fill"
+    },
+    "C-Add-Book.dc.html": {
+      "x": 4080,
+      "y": 0,
+      "w": 1280,
+      "h": 1400,
+      "title": "Desktop — Add a book + custom fields",
+      "expand": "fill"
+    },
+    "C-Add-Camping.dc.html": {
+      "x": 5440,
+      "y": 0,
+      "w": 1280,
+      "h": 1500,
+      "title": "Desktop — Add camping kit + new field",
+      "expand": "fill"
+    },
+    "M-Landing.dc.html": {
+      "x": 0,
+      "y": 2100,
+      "w": 390,
+      "h": 1000,
+      "title": "Mobile — Landing"
+    },
+    "M-Unlock.dc.html": {
+      "x": 470,
+      "y": 2100,
+      "w": 390,
+      "h": 844,
+      "title": "Mobile — Librarian unlock"
+    },
+    "M-Advanced.dc.html": {
+      "x": 940,
+      "y": 2100,
+      "w": 390,
+      "h": 1400,
+      "title": "Mobile — Advanced search"
+    },
+    "M-Results.dc.html": {
+      "x": 1410,
+      "y": 2100,
+      "w": 390,
+      "h": 1800,
+      "title": "Mobile — Results (admin on) + inline loan"
+    },
+    "M-Add.dc.html": {
+      "x": 1880,
+      "y": 2100,
+      "w": 390,
+      "h": 2000,
+      "title": "Mobile — Add a book"
+    },
+    "M-Lookup.dc.html": {
+      "x": 2350,
+      "y": 2100,
+      "w": 390,
+      "h": 1400,
+      "title": "Mobile — Add: look it up (full page)"
+    }
+  },
+  "order": [
+    "C-Landing.dc.html",
+    "C-Results.dc.html",
+    "C-Add.dc.html",
+    "C-Add-Book.dc.html",
+    "C-Add-Camping.dc.html",
+    "M-Landing.dc.html",
+    "M-Unlock.dc.html",
+    "M-Advanced.dc.html",
+    "M-Results.dc.html",
+    "M-Add.dc.html",
+    "M-Lookup.dc.html"
+  ],
+  "notes": {
+    "titleC": {
+      "x": 0,
+      "y": -300,
+      "text": "Broadsheet — desktop",
+      "kind": "title1",
+      "maxW": 6720
+    },
+    "titleM": {
+      "x": 0,
+      "y": 1800,
+      "text": "Broadsheet — mobile",
+      "kind": "title1",
+      "maxW": 2740
+    }
+  },
+  "designSystems": []
+}

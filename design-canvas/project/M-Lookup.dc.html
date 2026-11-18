@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mobile — Look it up</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;1,9..144,300&amp;family=Instrument+Sans:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#fbf8f2}
+a{color:#a4553b}a:hover{color:#7d3d28}
+</style>
+</helmet>
+<div style="width: 390px; min-height: 1400px; box-sizing: border-box; background: #fbf8f2; color: #1f2629; font-family: 'Instrument Sans', sans-serif">
+  <div style="position: sticky; top: 0; background: #fbf8f2; padding: 8px 16px 12px; border-bottom: 1.5px solid #1f2629; display: flex; flex-direction: column; gap: 10px; z-index: 1">
+    <div style="display: flex; align-items: center; justify-content: space-between">
+      <a href="M-Add.dc.html" aria-label="Back to the new entry" style="font-family: 'Fraunces', serif; font-size: 28px; color: #1f2629; text-decoration: none; width: 44px; height: 44px; display: flex; align-items: center">←</a>
+      <h1 style="margin: 0; font-family: 'Fraunces', serif; font-weight: 500; font-size: 22px">Look it up</h1>
+      <a href="M-Add.dc.html" style="font-size: 14px; font-weight: 600; min-height: 44px; display: flex; align-items: center">Type it myself</a>
+    </div>
+    <div style="display: flex; align-items: flex-end; gap: 8px; border-bottom: 1px solid #1f2629">
+      <label for="ml-q" style="position: absolute; left: -9999px">Title or ISBN</label>
+      <input id="ml-q" type="search" value="the hobbit" style="flex: 1; min-width: 0; font-family: 'Fraunces', serif; font-weight: 300; font-size: 26px; border: 0; background: transparent; color: #1f2629; padding: 2px 0 6px; outline: none">
+      <button type="button" aria-label="Clear" style="background: none; border: 0; color: #4b5458; font-size: 22px; width: 44px; height: 44px; cursor: pointer">×</button>
+    </div>
+    <div role="group" aria-label="Source" style="display: flex; gap: 6px; overflow-x: auto; font-size: 13px; font-weight: 600">
+      <button type="button" aria-pressed="true" style="font: inherit; background: #1f2629; color: #fbf8f2; border: 1px solid #1f2629; padding: 0 12px; min-height: 36px; white-space: nowrap">All sources</button>
+      <button type="button" style="font: inherit; background: none; color: #1f2629; border: 1px solid #1f2629; padding: 0 12px; min-height: 36px; white-space: nowrap">Open Library</button>
+      <button type="button" style="font: inherit; background: none; color: #1f2629; border: 1px solid #1f2629; padding: 0 12px; min-height: 36px; white-space: nowrap">Google Books</button>
+      <button type="button" style="font: inherit; background: none; color: #1f2629; border: 1px solid #1f2629; padding: 0 12px; min-height: 36px; white-space: nowrap">MusicBrainz</button>
+    </div>
+  </div>
+
+  <p style="margin: 0; padding: 12px 16px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: #4b5458">24 matches · tap one to fill in the form</p>
+  <ol style="list-style: none; margin: 0; padding: 0 16px">
+    <sc-for list="{{results}}" as="r" hint-placeholder-count="10">
+      <li style="border-top: 1px solid #c9c4b8">
+        <a href="M-Add.dc.html" style="display: flex; gap: 12px; align-items: center; padding: 12px 0; color: #1f2629; text-decoration: none; min-height: 56px">
+          <span style="flex: 1; min-width: 0">
+            <span style="display: block; font-family: 'Fraunces', serif; font-weight: 500; font-size: 19px; line-height: 1.2">{{r.title}}</span>
+            <span style="display: block; font-size: 13px; color: #4b5458; margin-top: 2px">{{r.meta}}</span>
+          </span>
+          <span style="flex: none; font-size: 10px; font-weight: 600; letter-spacing: 0.1em; color: #a4553b">{{r.src}}</span>
+          <span aria-hidden="true" style="font-family: 'Fraunces', serif; font-size: 20px; color: #8b8f90">›</span>
+        </a>
+      </li>
+    </sc-for>
+  </ol>
+  <div style="padding: 16px">
+    <button type="button" style="width: 100%; font: inherit; font-weight: 600; background: none; border: 1.5px solid #1f2629; color: #1f2629; min-height: 48px; cursor: pointer">Load more</button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":1400}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      results: [
+        { title: 'The Hobbit', meta: 'J. R. R. Tolkien · HarperCollins · 1995 · paperback', src: 'OL' },
+        { title: 'The Hobbit — illustrated', meta: 'ill. Alan Lee · 1997 · hardback', src: 'OL' },
+        { title: 'The Annotated Hobbit', meta: 'ed. Douglas A. Anderson · 2002', src: 'OL' },
+        { title: 'The Hobbit', meta: 'Unwin Books · 1966 · paperback', src: 'GB' },
+        { title: 'The Hobbit, or There and Back Again', meta: 'Houghton Mifflin · 1984 · hardback', src: 'GB' },
+        { title: 'The Hobbit — graphic novel', meta: 'adapt. Charles Dixon · 1990', src: 'OL' },
+        { title: 'The History of The Hobbit', meta: 'John D. Rateliff · 2007', src: 'OL' },
+        { title: 'The Hobbit — audiobook CD', meta: 'read by Rob Inglis · 2002', src: 'MB' },
+        { title: 'The Art of The Hobbit', meta: 'Wayne G. Hammond · 2011', src: 'GB' },
+        { title: 'The Hobbit — facsimile 1st ed.', meta: 'HarperCollins · 2016', src: 'OL' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

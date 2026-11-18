@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Broadsheet — Results</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,800;1,9..144,300;1,9..144,500&amp;family=Instrument+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#fbf8f2}
+a{color:#a4553b}a:hover{color:#7d3d28}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #fbf8f2; color: #1f2629; font-family: 'Instrument Sans', sans-serif">
+  <div style="max-width: 1200px; margin: 0 auto; padding: 0 clamp(16px, 4vw, 48px) 64px">
+    <header style="display: flex; align-items: center; gap: 24px; flex-wrap: wrap; padding: 16px 0; border-bottom: 4px double #1f2629">
+      <a href="C-Landing.dc.html" style="font-family: 'Fraunces', serif; font-weight: 800; font-size: 30px; letter-spacing: -0.02em; color: #1f2629; text-decoration: none">The Tallow Lane Library</a>
+      <form role="search" style="flex: 1 1 360px; display: flex; align-items: flex-end; gap: 12px; border-bottom: 1.5px solid #1f2629">
+        <label for="cr-q" style="position: absolute; left: -9999px">Search</label>
+        <input id="cr-q" type="search" value="miyazaki" style="flex: 1; min-width: 0; font-family: 'Fraunces', serif; font-weight: 300; font-size: 30px; border: 0; background: transparent; color: #1f2629; outline: none; padding: 2px 0 6px">
+        <a href="C-Results.dc.html" aria-label="Search" style="font-family: 'Fraunces', serif; font-size: 30px; color: #1f2629; text-decoration: none; padding-bottom: 6px">→</a>
+      </form>
+      <sc-if value="{{adminMode}}" hint-placeholder-val="{{ true }}">
+        <div style="display: flex; align-items: center; gap: 14px; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase">
+          <span style="color: #a4553b; font-weight: 600">● Librarian</span>
+          <a href="C-Add.dc.html" style="background: #1f2629; color: #fbf8f2; text-decoration: none; padding: 0 14px; min-height: 40px; display: flex; align-items: center">New entry</a>        </div>
+      </sc-if>
+    </header>
+
+    <div style="padding: 28px 0 22px; border-bottom: 1px solid #1f2629; display: flex; flex-direction: column; gap: 12px">
+      <p style="margin: 0; font-family: 'Fraunces', serif; font-weight: 300; font-size: clamp(22px, 2.6vw, 32px); line-height: 1.45">
+        Showing
+        <select aria-label="Media" style="font: inherit; font-weight: 500; color: #a4553b; background: none; border: 0; border-bottom: 2px solid #a4553b; padding: 0 2px; cursor: pointer"><option>everything</option><option>books</option><option>films</option></select>
+        kept
+        <select aria-label="Place" style="font: inherit; font-weight: 500; color: #a4553b; background: none; border: 0; border-bottom: 2px solid #a4553b; padding: 0 2px; cursor: pointer"><option>anywhere</option><option>in the lounge</option><option>in the shed</option></select>,
+        from
+        <select aria-label="Period" style="font: inherit; font-weight: 500; color: #a4553b; background: none; border: 0; border-bottom: 2px solid #a4553b; padding: 0 2px; cursor: pointer"><option>any year</option><option>the 1980s</option><option>the 1990s</option></select>,
+        <select aria-label="Availability" style="font: inherit; font-weight: 500; color: #a4553b; background: none; border: 0; border-bottom: 2px solid #a4553b; padding: 0 2px; cursor: pointer"><option>in or out</option><option>on the shelf</option><option>on loan</option></select>,
+        sorted by
+        <select aria-label="Sort" style="font: inherit; font-weight: 500; color: #a4553b; background: none; border: 0; border-bottom: 2px solid #a4553b; padding: 0 2px; cursor: pointer"><option>relevance</option><option>title</option><option>year</option><option>date added</option></select>.
+      </p>
+      <span style="font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; color: #4b5458">7 entries · 5 by name, 2 by idea</span>
+    </div>
+
+    <ol style="list-style: none; margin: 0; padding: 0">
+      <sc-for list="{{items}}" as="item" hint-placeholder-count="7">
+        <li style="border-bottom: 1px solid #c9c4b8">
+          <div style="display: flex; gap: 24px; align-items: baseline; padding: 22px 0; flex-wrap: wrap">
+            <span style="flex: none; width: 44px; font-family: 'Fraunces', serif; font-weight: 300; font-size: 28px; color: #8b8f90">{{item.n}}</span>
+            <div style="flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 6px">
+              <h3 style="margin: 0; font-family: 'Fraunces', serif; font-weight: 500; font-size: 30px; line-height: 1.1; letter-spacing: -0.01em">{{item.title}}</h3>
+              <span style="font-family: 'Fraunces', serif; font-style: italic; font-weight: 300; font-size: 19px">{{item.creator}}</span>
+              <span style="font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: #4b5458">{{item.type}} · {{item.year}} · {{item.loc}} · <span style="color: #a4553b">{{item.match}}</span></span>
+              <sc-if value="{{item.onLoan}}" hint-placeholder-val="{{ false }}">
+                <span style="font-family: 'Fraunces', serif; font-style: italic; font-size: 18px; color: #a4553b">Out — with {{item.borrower}} since {{item.since}}.</span>
+              </sc-if>
+            </div>
+            <sc-if value="{{item.hasPhoto}}" hint-placeholder-val="{{ false }}">
+              <figure style="flex: none; align-self: center; margin: 0; width: 62px; height: 82px">
+                <button type="button" aria-label="View photos of {{item.title}} ({{item.caption}})" style="position: relative; width: 62px; height: 82px; padding: 4px; background: #fff; border: 1px solid #c9c4b8; box-shadow: 2px 2px 0 #e6e2da; cursor: zoom-in">
+                  <span style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; background: linear-gradient(160deg, #d9cfbb, #b9ae97); color: #4b4436; font-family: 'IBM Plex Mono', monospace; font-size: 9px; text-align: center">{{item.photoLabel}}</span>
+                  <span style="position: absolute; right: -6px; bottom: -6px; background: #1f2629; color: #fbf8f2; font-size: 11px; font-weight: 600; padding: 2px 6px">{{item.photoCount}}</span>
+                </button>
+              </figure>
+            </sc-if>
+            <div style="display: flex; gap: 18px; align-items: center; font-size: 14px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase">
+              <sc-if value="{{adminMode}}" hint-placeholder-val="{{ true }}">
+                <a href="C-Add.dc.html" style="color: #a4553b; min-height: 44px; display: flex; align-items: center">Edit</a>
+              </sc-if>
+              <sc-if value="{{item.available}}" hint-placeholder-val="{{ true }}">
+                <button type="button" style="font: inherit; letter-spacing: inherit; text-transform: inherit; background: {{item.btnBg}}; color: {{item.btnFg}}; border: 1.5px solid #1f2629; padding: 0 18px; min-height: 44px; cursor: pointer">Loan</button>
+              </sc-if>
+              <sc-if value="{{item.onLoan}}" hint-placeholder-val="{{ false }}">
+                <button type="button" style="font: inherit; letter-spacing: inherit; text-transform: inherit; background: none; color: #1f2629; border: 1.5px solid #1f2629; padding: 0 14px; min-height: 44px; cursor: pointer">Returned</button>
+              </sc-if>
+            </div>
+          </div>
+          <sc-if value="{{item.loanOpen}}" hint-placeholder-val="{{ false }}">
+            <form aria-label="Lend this item" style="margin: 0 0 22px 68px; padding: 18px 22px; background: #f2ece0; border-top: 3px solid #1f2629; display: flex; flex-wrap: wrap; gap: 14px 22px; align-items: flex-end">
+              <span style="flex: 1 1 100%; font-family: 'Fraunces', serif; font-size: 20px">Lend <i>{{item.title}}</i> to —</span>
+              <label style="flex: 1 1 260px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Borrower's name
+                <input value="Kasia" style="font-family: 'Fraunces', serif; font-weight: 300; font-size: 26px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1.5px solid #1f2629; background: transparent; padding: 2px 0; color: #1f2629"></label>
+              <span style="font-size: 15px; color: #4b5458; padding-bottom: 8px">dated <b style="color: #1f2629">18 November 2026</b></span>
+              <button type="button" style="font: inherit; font-weight: 600; background: #a4553b; color: #fbf8f2; border: 0; padding: 0 22px; min-height: 46px; cursor: pointer">Confirm loan</button>
+              <button type="button" style="font: inherit; background: none; border: 0; color: #1f2629; text-decoration: underline; min-height: 46px; cursor: pointer">Cancel</button>
+            </form>
+          </sc-if>
+        </li>
+      </sc-for>
+    </ol>
+
+    <section style="padding-top: 32px; display: flex; flex-wrap: wrap; gap: 24px">
+      <h2 style="flex: 1 1 100%; margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase">See also — related by idea, not by name</h2>
+      <a href="C-Results.dc.html" style="flex: 1 1 260px; color: #1f2629; text-decoration: none; border-top: 1.5px solid #1f2629; padding-top: 12px">
+        <span style="display: block; font-family: 'Fraunces', serif; font-weight: 500; font-size: 22px">The Borrowers</span>
+        <span style="display: block; font-family: 'Fraunces', serif; font-style: italic; font-weight: 300">Mary Norton, 1952 · Book</span>
+        <span style="display: block; font-size: 14px; color: #4b5458; margin-top: 6px">Source of “Arrietty”; tiny people, hidden households</span></a>
+      <a href="C-Results.dc.html" style="flex: 1 1 260px; color: #1f2629; text-decoration: none; border-top: 1.5px solid #1f2629; padding-top: 12px">
+        <span style="display: block; font-family: 'Fraunces', serif; font-weight: 500; font-size: 22px">Wind in the Willows</span>
+        <span style="display: block; font-family: 'Fraunces', serif; font-style: italic; font-weight: 300">Kenneth Grahame, 1908 · Book</span>
+        <span style="display: block; font-size: 14px; color: #4b5458; margin-top: 6px">Gentle, pastoral, friendship</span></a>
+      <a href="C-Results.dc.html" style="flex: 1 1 260px; color: #1f2629; text-decoration: none; border-top: 1.5px solid #1f2629; padding-top: 12px">
+        <span style="display: block; font-family: 'Fraunces', serif; font-weight: 500; font-size: 22px">Kite, diamond, 1.2 m</span>
+        <span style="display: block; font-family: 'Fraunces', serif; font-style: italic; font-weight: 300">Equipment · Loft › Toy box</span>
+        <span style="display: block; font-size: 14px; color: #4b5458; margin-top: 6px">Flying, wind, outdoors</span></a>
+    </section>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"adminMode":{"editor":"boolean","default":true},"$preview":{"width":1280,"height":1300}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const items = [
+      { n: '01', photo: ['cover', '1', 'DVD sleeve'], title: 'My Neighbour Totoro', creator: 'Hayao Miyazaki', type: 'DVD', year: '1988', loc: 'Lounge › TV cabinet', match: 'director' },
+      { n: '02', title: 'Kiki’s Delivery Service', creator: 'Hayao Miyazaki', type: 'DVD', year: '1989', loc: 'Lounge › TV cabinet', match: 'director', loanOpen: true },
+      { n: '03', title: 'Porco Rosso', creator: 'Hayao Miyazaki', type: 'Blu-ray', year: '1992', loc: 'Lounge › TV cabinet', match: 'director', onLoan: true, borrower: 'Ellie', since: '29 October' },
+      { n: '04', photo: ['cover', '2', 'Sleeve, disc'], title: 'Spirited Away', creator: 'Hayao Miyazaki', type: 'DVD', year: '2001', loc: 'Loft › Film box', match: 'director' },
+      { n: '05', title: 'Starting Point: 1979–1996', creator: 'Hayao Miyazaki', type: 'Book', year: '2009', loc: 'Study › Desk shelf', match: 'author' },
+      { n: '06', title: 'Studio Ghibli Collection', creator: 'Joe Hisaishi', type: 'CD', year: '2011', loc: 'Lounge › CD rack', match: 'by idea' },
+      { n: '07', photo: ['cover', '3', 'Cover & plates'], title: 'The Art of Spirited Away', creator: 'Studio Ghibli', type: 'Book', year: '2002', loc: 'Lounge › Bookcase 1 › Shelf 4', match: 'by idea' }
+    ].map((it) => ({
+      ...it,
+      hasPhoto: !!it.photo,
+      photoLabel: it.photo ? it.photo[0] : '',
+      photoCount: it.photo ? it.photo[1] : '',
+      caption: it.photo ? it.photo[2] : '',
+      onLoan: !!it.onLoan,
+      loanOpen: !!it.loanOpen,
+      available: !it.onLoan,
+      btnBg: it.loanOpen ? '#1f2629' : 'transparent',
+      btnFg: it.loanOpen ? '#fbf8f2' : '#1f2629'
+    }));
+    return { adminMode: this.props.adminMode ?? true, items };
+  }
+}
+</script>
+</body>
+</html>

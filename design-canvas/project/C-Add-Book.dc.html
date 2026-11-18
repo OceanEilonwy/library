@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Broadsheet — Add a book</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,800;1,9..144,300;1,9..144,500&amp;family=Instrument+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#fbf8f2}
+a{color:#a4553b}a:hover{color:#7d3d28}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #fbf8f2; color: #1f2629; font-family: 'Instrument Sans', sans-serif">
+  <div style="max-width: 1200px; margin: 0 auto; padding: 0 clamp(16px, 4vw, 48px) 64px">
+    <header style="display: flex; align-items: center; justify-content: space-between; gap: 24px; flex-wrap: wrap; padding: 16px 0; border-bottom: 4px double #1f2629">
+      <a href="C-Landing.dc.html" style="font-family: 'Fraunces', serif; font-weight: 800; font-size: 30px; letter-spacing: -0.02em; color: #1f2629; text-decoration: none">The Tallow Lane Library</a>
+      <span style="color: #a4553b; font-weight: 600; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase">● Librarian</span>
+    </header>
+
+    <h1 style="margin: 28px 0 8px; font-family: 'Fraunces', serif; font-weight: 300; font-size: clamp(40px, 5vw, 64px); letter-spacing: -0.02em; line-height: 1">A new entry — <i>Book</i></h1>
+    <p style="margin: 0 0 24px; font-family: 'Fraunces', serif; font-style: italic; font-weight: 300; font-size: 19px; color: #4b5458">The form follows the type: books ask for author, ISBN and publisher.</p>
+
+    <div style="display: flex; flex-wrap: wrap; gap: 48px; align-items: flex-start; border-top: 1.5px solid #1f2629; padding-top: 24px">
+      <section style="flex: 1 1 360px; max-width: 460px; display: flex; flex-direction: column; gap: 18px">
+        <h2 style="margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase">I. Look it up</h2>
+        <div style="display: flex; align-items: flex-end; gap: 10px; border-bottom: 1.5px solid #1f2629">
+          <label for="cb-q" style="position: absolute; left: -9999px">Title or ISBN</label>
+          <input id="cb-q" value="the hobbit" style="flex: 1; min-width: 0; font-family: 'Fraunces', serif; font-weight: 300; font-size: 30px; border: 0; background: transparent; color: #1f2629; padding: 2px 0 8px">
+          <button type="button" style="font: inherit; font-weight: 600; background: #1f2629; color: #fbf8f2; border: 0; padding: 0 16px; min-height: 44px; margin-bottom: 6px; cursor: pointer">Find</button>
+        </div>
+        <span style="font-size: 13px; color: #4b5458">Open Library · Google Books · or scan the barcode on the back</span>
+        <ol style="list-style: none; margin: 0; padding: 0">
+          <li style="padding: 14px 0; border-bottom: 1px solid #c9c4b8; display: flex; gap: 14px; align-items: baseline">
+            <span style="font-family: 'Fraunces', serif; color: #a4553b; font-size: 22px">✓</span>
+            <span style="flex: 1"><span style="display: block; font-family: 'Fraunces', serif; font-weight: 500; font-size: 22px">The Hobbit</span><span style="display: block; font-size: 14px; color: #4b5458">J. R. R. Tolkien · HarperCollins · 1995 · paperback</span><span style="display: block; font-size: 11px; font-weight: 600; letter-spacing: 0.12em; color: #a4553b; margin-top: 4px">OPEN LIBRARY · SELECTED</span></span>
+          </li>
+          <li style="padding: 14px 0; border-bottom: 1px solid #c9c4b8; display: flex; gap: 14px; align-items: baseline">
+            <span style="font-family: 'Fraunces', serif; color: #8b8f90; font-size: 22px">○</span>
+            <span style="flex: 1"><span style="display: block; font-family: 'Fraunces', serif; font-weight: 500; font-size: 22px">The Hobbit — illustrated</span><span style="display: block; font-size: 14px; color: #4b5458">J. R. R. Tolkien, ill. Alan Lee · 1997 · hardback</span></span>
+          </li>
+          <li style="padding: 14px 0; border-bottom: 1px solid #c9c4b8; display: flex; gap: 14px; align-items: baseline">
+            <span style="font-family: 'Fraunces', serif; color: #8b8f90; font-size: 22px">○</span>
+            <span style="flex: 1"><span style="display: block; font-family: 'Fraunces', serif; font-weight: 500; font-size: 22px">The Annotated Hobbit</span><span style="display: block; font-size: 14px; color: #4b5458">ed. Douglas A. Anderson · 2002</span></span>
+          </li>
+        </ol>
+        <p style="margin: 0; padding: 12px 14px; border-left: 0; background: #eef1ea; font-size: 15px; line-height: 1.5"><b>No similar items</b> in the catalogue — no duplicate warning this time.</p>
+      </section>
+
+      <section style="flex: 999 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 22px">
+        <h2 style="margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase">II. The details</h2>
+        <form style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 22px 32px">
+          <label style="grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Title
+            <input value="The Hobbit" style="font-family: 'Fraunces', serif; font-weight: 500; font-size: 36px; letter-spacing: -0.01em; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 2px 0; color: #1f2629"></label>
+          <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Author
+            <input value="J. R. R. Tolkien" style="font-family: 'Fraunces', serif; font-style: italic; font-weight: 300; font-size: 22px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629"></label>
+          <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Type
+            <select style="font-family: 'Fraunces', serif; font-weight: 300; font-size: 22px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629; min-height: 44px"><option>Book</option><option>CD</option><option>DVD</option><option>Equipment</option></select></label>
+          <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Publisher
+            <input value="HarperCollins" style="font-family: 'Fraunces', serif; font-weight: 300; font-size: 22px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629"></label>
+          <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Year · edition
+            <input value="1995 · paperback" style="font-family: 'Fraunces', serif; font-weight: 300; font-size: 22px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629"></label>
+          <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">ISBN
+            <input value="978-0-261-10295-4" style="font-family: 'IBM Plex Mono', monospace; font-size: 17px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 8px 0; color: #1f2629"></label>
+          <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Genre
+            <input value="Fantasy, children's" style="font-family: 'Fraunces', serif; font-weight: 300; font-size: 22px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629"></label>
+          <label style="grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Description &amp; themes — helps search by idea
+            <input value="quest, dragons, reluctant hero, home and adventure" style="font-family: 'Fraunces', serif; font-style: italic; font-weight: 300; font-size: 22px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629"></label>
+          <label style="grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Location
+            <input value="Lounge › Bookcase 1 › Shelf 4" style="font-family: 'Fraunces', serif; font-weight: 300; font-size: 24px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629"></label>
+
+          <fieldset style="grid-column: 1 / -1; margin: 0; padding: 18px 20px 20px; border: 1px dashed #1f2629; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 18px 28px">
+            <legend style="font-size: 12px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; padding: 0 8px; color: #a4553b">Your own fields — saved for every Book</legend>
+            <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Series · number
+              <input value="— none —" style="font-family: 'Fraunces', serif; font-weight: 300; font-size: 22px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629"></label>
+            <div style="display: flex; flex-direction: column; gap: 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Signed copy
+              <div style="display: flex; gap: 18px; font-size: 17px; font-weight: 400; letter-spacing: 0; text-transform: none">
+                <label><input type="radio" name="cb-signed" style="accent-color: #a4553b"> Yes</label>
+                <label><input type="radio" name="cb-signed" checked style="accent-color: #a4553b"> No</label>
+              </div></div>
+            <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Read by
+              <input value="Sam, Fraser" style="font-family: 'Fraunces', serif; font-weight: 300; font-size: 22px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629"></label>
+            <button type="button" style="font: inherit; font-weight: 600; align-self: end; background: none; border: 1.5px solid #1f2629; color: #1f2629; padding: 0 16px; min-height: 44px; cursor: pointer; text-align: left">+ Add a field</button>
+          </fieldset>
+
+          <div style="grid-column: 1 / -1; display: flex; gap: 20px; align-items: center; flex-wrap: wrap; border-top: 1px solid #c9c4b8; padding-top: 18px">
+            <button type="button" style="font: inherit; background: none; border: 1px dashed #1f2629; color: #1f2629; width: 110px; height: 110px; cursor: pointer">+ Photo<br><span style="font-size: 12px; color: #4b5458">optional</span></button>
+            <label style="display: flex; gap: 10px; align-items: center; font-size: 15px"><input type="checkbox" style="width: 18px; height: 18px; accent-color: #a4553b"> Use cover from Open Library</label>
+          </div>
+        </form>
+        <div style="display: flex; gap: 14px; justify-content: flex-end; flex-wrap: wrap; border-top: 1.5px solid #1f2629; padding-top: 20px">
+          <button type="button" style="font: inherit; background: none; border: 1.5px solid #1f2629; color: #1f2629; padding: 0 18px; min-height: 50px; cursor: pointer">Save &amp; another</button>
+          <button type="button" style="font: inherit; font-weight: 600; background: #a4553b; color: #fbf8f2; border: 0; padding: 0 28px; min-height: 50px; cursor: pointer">Add to catalogue</button>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1400}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

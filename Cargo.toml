@@ -1,0 +1,55 @@
+[package]
+name = "library"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A home library catalogue: books, music, films and kit, with hybrid full-text and meaning-based search."
+
+[dependencies]
+anyhow = "1"
+argon2 = { version = "0.5", features = ["std"] }
+axum = { version = "0.8", features = ["multipart", "macros"] }
+base64 = "0.22"
+candle-core = "0.11"
+candle-nn = "0.11"
+candle-transformers = "0.11"
+clap = { version = "4", features = ["derive"] }
+hmac = "0.12"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "service"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+jiff = "0.2"
+maud = "0.27"
+mime_guess = "2"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
+rusqlite = { version = "0.37", features = ["bundled", "functions"] }
+rust-embed = { version = "8", features = ["include-exclude"] }
+rxing = { version = "0.7", default-features = false, features = ["image"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlite-vec = "0.1.6"
+subtle = "2"
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "signal", "time", "sync", "fs"] }
+toml = "0.8"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["compression-gzip", "compression-br", "set-header", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zerocopy = { version = "0.8", features = ["derive"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# candle's matmuls are painfully slow unoptimised; keep tests usable.
+[profile.dev.package."*"]
+opt-level = 2

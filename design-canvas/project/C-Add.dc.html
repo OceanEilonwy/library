@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Broadsheet — Add item</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,800;1,9..144,300;1,9..144,500&amp;family=Instrument+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#fbf8f2}
+a{color:#a4553b}a:hover{color:#7d3d28}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #fbf8f2; color: #1f2629; font-family: 'Instrument Sans', sans-serif">
+  <div style="max-width: 1200px; margin: 0 auto; padding: 0 clamp(16px, 4vw, 48px) 64px">
+    <header style="display: flex; align-items: center; justify-content: space-between; gap: 24px; flex-wrap: wrap; padding: 16px 0; border-bottom: 4px double #1f2629">
+      <a href="C-Landing.dc.html" style="font-family: 'Fraunces', serif; font-weight: 800; font-size: 30px; letter-spacing: -0.02em; color: #1f2629; text-decoration: none">The Tallow Lane Library</a>
+      <span style="color: #a4553b; font-weight: 600; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase">● Librarian</span>
+    </header>
+
+    <h1 style="margin: 28px 0 8px; font-family: 'Fraunces', serif; font-weight: 300; font-size: clamp(40px, 5vw, 64px); letter-spacing: -0.02em; line-height: 1">A new entry</h1>
+    <p style="margin: 0 0 24px; font-family: 'Fraunces', serif; font-style: italic; font-weight: 300; font-size: 19px; color: #4b5458">Look it up first; we'll set the type for you.</p>
+
+    <div style="display: flex; flex-wrap: wrap; gap: 48px; align-items: flex-start; border-top: 1.5px solid #1f2629; padding-top: 24px">
+      <section style="flex: 1 1 360px; max-width: 460px; display: flex; flex-direction: column; gap: 18px">
+        <h2 style="margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase">I. Look it up</h2>
+        <div style="display: flex; align-items: flex-end; gap: 10px; border-bottom: 1.5px solid #1f2629">
+          <label for="ca-q" style="position: absolute; left: -9999px">Title, ISBN or barcode</label>
+          <input id="ca-q" value="joni mitchell blue" style="flex: 1; min-width: 0; font-family: 'Fraunces', serif; font-weight: 300; font-size: 30px; border: 0; background: transparent; color: #1f2629; padding: 2px 0 8px">
+          <button type="button" style="font: inherit; font-weight: 600; background: #1f2629; color: #fbf8f2; border: 0; padding: 0 16px; min-height: 44px; margin-bottom: 6px; cursor: pointer">Find</button>
+        </div>
+        <span style="font-size: 13px; color: #4b5458">From MusicBrainz · Open Library · TMDb · or scan a barcode</span>
+        <ol style="list-style: none; margin: 0; padding: 0">
+          <li style="padding: 14px 0; border-bottom: 1px solid #c9c4b8; display: flex; gap: 14px; align-items: baseline">
+            <span style="font-family: 'Fraunces', serif; color: #a4553b; font-size: 22px">✓</span>
+            <span style="flex: 1"><span style="display: block; font-family: 'Fraunces', serif; font-weight: 500; font-size: 22px">Blue</span><span style="display: block; font-size: 14px; color: #4b5458">Joni Mitchell · Reprise · 1971 · CD, 10 tracks</span><span style="display: block; font-size: 11px; font-weight: 600; letter-spacing: 0.12em; color: #a4553b; margin-top: 4px">MUSICBRAINZ · SELECTED</span></span>
+          </li>
+          <li style="padding: 14px 0; border-bottom: 1px solid #c9c4b8; display: flex; gap: 14px; align-items: baseline">
+            <span style="font-family: 'Fraunces', serif; color: #8b8f90; font-size: 22px">○</span>
+            <span style="flex: 1"><span style="display: block; font-family: 'Fraunces', serif; font-weight: 500; font-size: 22px">Blue (2021 remaster)</span><span style="display: block; font-size: 14px; color: #4b5458">Joni Mitchell · Rhino · 2021 · CD</span><span style="display: block; font-size: 11px; font-weight: 600; letter-spacing: 0.12em; color: #4b5458; margin-top: 4px">MUSICBRAINZ</span></span>
+          </li>
+          <li style="padding: 14px 0; border-bottom: 1px solid #c9c4b8; display: flex; gap: 14px; align-items: baseline">
+            <span style="font-family: 'Fraunces', serif; color: #8b8f90; font-size: 22px">○</span>
+            <span style="flex: 1"><span style="display: block; font-family: 'Fraunces', serif; font-weight: 500; font-size: 22px">Reckless Daughter</span><span style="display: block; font-size: 14px; color: #4b5458">David Yaffe · 2017 · Book, biography</span><span style="display: block; font-size: 11px; font-weight: 600; letter-spacing: 0.12em; color: #4b5458; margin-top: 4px">OPEN LIBRARY</span></span>
+          </li>
+        </ol>
+        <figure style="margin: 8px 0 0; height: 200px; border: 1px dashed #8b8f90; display: flex; align-items: center; justify-content: center; text-align: center; padding: 12px; box-sizing: border-box; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #5d676c">[ margin drawing — a record sleeve half out of its box ]</figure>
+      </section>
+
+      <section style="flex: 999 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 22px">
+        <h2 style="margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase">II. The details</h2>
+
+        <aside role="alert" style="border: 1.5px solid #1f2629; box-shadow: 6px 6px 0 #a4553b; padding: 18px 22px; display: flex; flex-direction: column; gap: 10px; background: #fff">
+          <span style="font-size: 12px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: #a4553b">Editor's note — possible duplicate</span>
+          <p style="margin: 0; font-family: 'Fraunces', serif; font-weight: 300; font-size: 21px; line-height: 1.4">The catalogue already lists <i>Blue</i> by Joni Mitchell — on <b style="font-weight: 500">vinyl</b>, in <b style="font-weight: 500">Lounge › Record crate</b>. Same title, same artist; different format.</p>
+          <div style="display: flex; gap: 14px; flex-wrap: wrap">
+            <button type="button" style="font: inherit; font-weight: 600; background: #1f2629; color: #fbf8f2; border: 0; padding: 0 18px; min-height: 44px; cursor: pointer">Keep both — it's a different copy</button>
+            <a href="C-Results.dc.html" style="font-weight: 600; color: #1f2629; border: 1.5px solid #1f2629; padding: 0 16px; min-height: 44px; display: flex; align-items: center; text-decoration: none">View the vinyl entry</a>
+          </div>
+        </aside>
+
+        <form style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 22px 32px">
+          <label style="grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Title
+            <input value="Blue" style="font-family: 'Fraunces', serif; font-weight: 500; font-size: 36px; letter-spacing: -0.01em; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 2px 0; color: #1f2629"></label>
+          <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Artist
+            <input value="Joni Mitchell" style="font-family: 'Fraunces', serif; font-style: italic; font-weight: 300; font-size: 22px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629"></label>
+          <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Type
+            <select style="font-family: 'Fraunces', serif; font-weight: 300; font-size: 22px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629; min-height: 44px"><option>CD</option><option>Vinyl</option><option>Book</option><option>DVD</option><option>Equipment</option></select></label>
+          <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Year
+            <input value="1971" style="font-family: 'Fraunces', serif; font-weight: 300; font-size: 22px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629"></label>
+          <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Label
+            <input value="Reprise" style="font-family: 'Fraunces', serif; font-weight: 300; font-size: 22px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629"></label>
+          <label style="grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Description &amp; themes — helps search by idea
+            <input value="confessional folk, heartbreak, travel, dulcimer" style="font-family: 'Fraunces', serif; font-style: italic; font-weight: 300; font-size: 22px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629"></label>
+
+          <div style="grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px">
+            <label for="ca-loc" style="font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Location — type a path, use › for inside</label>
+            <input id="ca-loc" value="Lounge › CD rack › Row 2" style="font-family: 'Fraunces', serif; font-weight: 300; font-size: 24px; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629">
+            <div style="background: #fff; border: 1px solid #1f2629; font-size: 15px">
+              <div style="padding: 10px 14px; border-bottom: 1px solid #e6e2da; color: #4b5458">Lounge › <b style="color: #1f2629">CD rack</b> › Row 1</div>
+              <div style="padding: 10px 14px; border-bottom: 1px solid #e6e2da; background: #f2ece0">Lounge › <b>CD rack</b> › Row 2 <span style="float: right; font-size: 12px; color: #4b5458">exists</span></div>
+              <div style="padding: 10px 14px; color: #a4553b; font-weight: 600">+ Create “Lounge › CD rack › Row 3”</div>
+            </div>
+          </div>
+
+          <div style="grid-column: 1 / -1; display: flex; gap: 20px; align-items: center; flex-wrap: wrap; border-top: 1px solid #c9c4b8; padding-top: 18px">
+            <button type="button" style="font: inherit; background: none; border: 1px dashed #1f2629; color: #1f2629; width: 110px; height: 110px; cursor: pointer">+ Photo<br><span style="font-size: 12px; color: #4b5458">optional</span></button>
+            <label style="display: flex; gap: 10px; align-items: center; font-size: 15px"><input type="checkbox" checked style="width: 18px; height: 18px; accent-color: #a4553b"> Use cover art from MusicBrainz</label>
+          </div>
+        </form>
+
+        <div style="display: flex; gap: 14px; justify-content: flex-end; flex-wrap: wrap; border-top: 1.5px solid #1f2629; padding-top: 20px">
+          <button type="button" style="font: inherit; background: none; border: 1.5px solid #1f2629; color: #1f2629; padding: 0 18px; min-height: 50px; cursor: pointer">Save &amp; another</button>
+          <button type="button" style="font: inherit; font-weight: 600; background: #a4553b; color: #fbf8f2; border: 0; padding: 0 28px; min-height: 50px; cursor: pointer">Add to catalogue</button>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1300}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

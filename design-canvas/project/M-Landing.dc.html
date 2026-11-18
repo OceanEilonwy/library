@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mobile — Landing</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,800;1,9..144,300;1,9..144,500&amp;family=Instrument+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#fbf8f2}
+a{color:#a4553b}a:hover{color:#7d3d28}
+input::placeholder{color:#8b8f90;font-style:italic}
+</style>
+</helmet>
+<div style="width: 390px; min-height: 1000px; box-sizing: border-box; padding: 0 16px 32px; background: #fbf8f2; color: #1f2629; font-family: 'Instrument Sans', sans-serif; display: flex; flex-direction: column">
+  <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #1f2629; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase">
+    <span>Wed 18 Nov 2026</span>
+    <a href="M-Unlock.dc.html" style="color: #1f2629; text-decoration: none; border: 1px solid #1f2629; padding: 0 12px; min-height: 44px; display: flex; align-items: center">Librarian</a>
+  </div>
+
+  <header style="text-align: center; padding: 22px 0 16px; border-bottom: 4px double #1f2629">
+    <h1 style="margin: 0; font-family: 'Fraunces', serif; font-weight: 800; font-size: 50px; line-height: 0.92; letter-spacing: -0.03em">{{libraryTitle}}</h1>
+    <p style="margin: 10px 0 0; font-family: 'Fraunces', serif; font-style: italic; font-weight: 300; font-size: 16px">Everything on the shelves, in the shed and in the loft</p>
+  </header>
+
+  <form role="search" style="display: flex; flex-direction: column; gap: 10px; padding: 32px 0 8px">
+    <label for="m-q" style="font-size: 12px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: #a4553b">Search the catalogue</label>
+    <div style="display: flex; align-items: flex-end; gap: 8px; border-bottom: 1.5px solid #1f2629">
+      <input id="m-q" type="search" placeholder="What are you looking for?" style="flex: 1; min-width: 0; font-family: 'Fraunces', serif; font-weight: 300; font-size: 30px; letter-spacing: -0.02em; border: 0; background: transparent; color: #1f2629; outline: none; padding: 4px 0 10px">
+      <a href="M-Results.dc.html" aria-label="Search" style="font-family: 'Fraunces', serif; font-size: 36px; line-height: 1; color: #1f2629; text-decoration: none; padding: 0 0 10px; min-width: 44px; text-align: center">→</a>
+    </div>
+    <span style="font-size: 14px; color: #4b5458; line-height: 1.5">Words, names, years — or an idea: <i style="font-family: 'Fraunces', serif">“films for a rainy Sunday”</i></span>
+    <a href="M-Advanced.dc.html" style="align-self: flex-start; font-weight: 600; font-size: 15px; color: #a4553b; min-height: 44px; display: flex; align-items: center">Advanced search ↓</a>
+  </form>
+
+  <nav aria-label="Sections" style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid #1f2629; font-size: 15px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase">
+    <a href="M-Results.dc.html" style="color: #1f2629; text-decoration: none; padding: 0 4px; min-height: 56px; display: flex; align-items: center; border-bottom: 1px solid #c9c4b8; border-right: 1px solid #c9c4b8">Books</a>
+    <a href="M-Results.dc.html" style="color: #1f2629; text-decoration: none; padding: 0 14px; min-height: 56px; display: flex; align-items: center; border-bottom: 1px solid #c9c4b8">Music</a>
+    <a href="M-Results.dc.html" style="color: #1f2629; text-decoration: none; padding: 0 4px; min-height: 56px; display: flex; align-items: center; border-bottom: 1px solid #c9c4b8; border-right: 1px solid #c9c4b8">Film</a>
+    <a href="M-Results.dc.html" style="color: #1f2629; text-decoration: none; padding: 0 14px; min-height: 56px; display: flex; align-items: center; border-bottom: 1px solid #c9c4b8">Camping</a>
+    <a href="M-Results.dc.html" style="color: #1f2629; text-decoration: none; padding: 0 4px; min-height: 56px; display: flex; align-items: center; border-bottom: 1px solid #c9c4b8; border-right: 1px solid #c9c4b8">Tools</a>
+    <a href="M-Results.dc.html" style="color: #1f2629; text-decoration: none; padding: 0 14px; min-height: 56px; display: flex; align-items: center; border-bottom: 1px solid #c9c4b8">Games</a>
+    <a href="M-Results.dc.html" style="grid-column: 1 / -1; color: #a4553b; text-decoration: none; padding: 0 4px; min-height: 56px; display: flex; align-items: center; border-bottom: 1px solid #1f2629">New arrivals →</a>
+  </nav>
+
+  <figure style="margin: 28px 0 0; height: 200px; border: 1px dashed #8b8f90; display: flex; align-items: center; justify-content: center; text-align: center; padding: 12px; box-sizing: border-box; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #5d676c">[ drawing — reader in armchair, rucksack and kettle beside ]</figure>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"libraryTitle":{"editor":"text","default":"The Tallow Lane Library"},"$preview":{"width":390,"height":1000}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { libraryTitle: this.props.libraryTitle ?? 'The Tallow Lane Library' };
+  }
+}
+</script>
+</body>
+</html>

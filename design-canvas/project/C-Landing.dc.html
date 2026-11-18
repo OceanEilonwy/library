@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Broadsheet — Landing</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,800;1,9..144,300;1,9..144,500&amp;family=Instrument+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#fbf8f2}
+a{color:#a4553b}a:hover{color:#7d3d28}
+input::placeholder{color:#8b8f90;font-style:italic}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #fbf8f2; color: #1f2629; font-family: 'Instrument Sans', sans-serif; position: relative">
+  <div style="max-width: 1200px; margin: 0 auto; padding: 0 clamp(16px, 4vw, 48px)">
+    <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 0; border-bottom: 1px solid #1f2629; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase">
+      <span>Wednesday 18 November 2026</span>
+      <span style="display: flex; gap: 20px; align-items: center">
+        <button type="button" style="font: inherit; letter-spacing: inherit; text-transform: inherit; background: none; border: 1px solid #1f2629; color: #1f2629; padding: 0 12px; min-height: 40px; cursor: pointer">Librarian</button>
+      </span>
+    </div>
+
+    <header style="text-align: center; padding: 28px 0 20px; border-bottom: 4px double #1f2629">
+      <h1 style="margin: 0; font-family: 'Fraunces', serif; font-weight: 800; font-size: clamp(52px, 9.5vw, 128px); line-height: 0.92; letter-spacing: -0.03em; font-variation-settings: 'opsz' 144">{{libraryTitle}}</h1>
+      <p style="margin: 14px 0 0; font-family: 'Fraunces', serif; font-style: italic; font-weight: 300; font-size: 20px">A catalogue of everything on the shelves, in the shed and in the loft</p>
+    </header>
+
+    <nav aria-label="Sections" style="display: flex; justify-content: center; flex-wrap: wrap; border-bottom: 1px solid #1f2629; font-size: 15px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase">
+      <a href="C-Results.dc.html" style="color: #1f2629; text-decoration: none; padding: 14px 20px; border-right: 1px solid #c9c4b8">Books</a>
+      <a href="C-Results.dc.html" style="color: #1f2629; text-decoration: none; padding: 14px 20px; border-right: 1px solid #c9c4b8">Music</a>
+      <a href="C-Results.dc.html" style="color: #1f2629; text-decoration: none; padding: 14px 20px; border-right: 1px solid #c9c4b8">Film</a>
+      <a href="C-Results.dc.html" style="color: #1f2629; text-decoration: none; padding: 14px 20px; border-right: 1px solid #c9c4b8">Camping</a>
+      <a href="C-Results.dc.html" style="color: #1f2629; text-decoration: none; padding: 14px 20px; border-right: 1px solid #c9c4b8">Tools</a>
+      <a href="C-Results.dc.html" style="color: #1f2629; text-decoration: none; padding: 14px 20px; border-right: 1px solid #c9c4b8">Games</a>
+      <a href="C-Results.dc.html" style="color: #a4553b; text-decoration: none; padding: 14px 20px">New arrivals</a>
+    </nav>
+
+    <section style="display: flex; flex-wrap: wrap; gap: 32px; align-items: center; padding: 56px 0 36px">
+      <figure style="flex: 1 1 150px; max-width: 180px; height: 220px; margin: 0; border: 1px dashed #8b8f90; display: flex; align-items: center; justify-content: center; text-align: center; padding: 12px; box-sizing: border-box; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #5d676c">[ margin drawing — reader in armchair ]</figure>
+      <form role="search" style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 14px">
+        <label for="c-q" style="font-size: 13px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: #a4553b">Search the catalogue</label>
+        <div style="display: flex; align-items: flex-end; gap: 16px; border-bottom: 1.5px solid #1f2629">
+          <input id="c-q" type="search" placeholder="What are you looking for?" style="flex: 1; min-width: 0; font-family: 'Fraunces', serif; font-weight: 300; font-size: clamp(32px, 5vw, 64px); letter-spacing: -0.02em; border: 0; background: transparent; color: #1f2629; outline: none; padding: 4px 0 10px">
+          <a href="C-Results.dc.html" aria-label="Search" style="font-family: 'Fraunces', serif; font-size: 52px; line-height: 1; color: #1f2629; text-decoration: none; padding: 0 0 12px; min-width: 44px; text-align: center">→</a>
+        </div>
+        <div style="display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 15px; color: #4b5458">
+          <span>Words, names, years — or an idea: <i style="font-family: 'Fraunces', serif">“films for a rainy Sunday”</i></span>
+          <button type="button" aria-expanded="{{advExpanded}}" aria-controls="c-adv" onClick="{{toggleAdv}}" style="font: inherit; font-weight: 600; background: none; border: 0; color: #a4553b; cursor: pointer; padding: 6px 0; min-height: 44px">{{advLabel}}</button>
+        </div>
+      </form>
+      <figure style="flex: 1 1 150px; max-width: 180px; height: 220px; margin: 0; border: 1px dashed #8b8f90; display: flex; align-items: center; justify-content: center; text-align: center; padding: 12px; box-sizing: border-box; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #5d676c">[ margin drawing — rucksack &amp; kettle ]</figure>
+    </section>
+
+    <sc-if value="{{advOpen}}" hint-placeholder-val="{{ false }}">
+    <section id="c-adv" aria-label="Advanced search" style="border-top: 1.5px solid #1f2629; padding: 22px 0 48px; display: flex; flex-wrap: wrap; gap: 40px">
+      <div style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 22px">
+        <h2 style="margin: 0; font-family: 'Fraunces', serif; font-weight: 500; font-size: 30px">Advanced search</h2>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 22px 32px">
+          <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Title
+            <input value="the * of *" style="font-family: 'Fraunces', serif; font-weight: 300; font-size: 24px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629"></label>
+          <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Author, artist or director
+            <input value="Miyazaki" style="font-family: 'Fraunces', serif; font-weight: 300; font-size: 24px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629"></label>
+          <div style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Released
+            <div style="display: flex; align-items: baseline; gap: 10px; font-family: 'Fraunces', serif; font-weight: 300; font-size: 24px; text-transform: none; letter-spacing: 0">
+              <input aria-label="From" value="1984" style="font: inherit; width: 90px; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629"><i>to</i>
+              <input aria-label="To" value="2001" style="font: inherit; width: 90px; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629"></div></div>
+          <fieldset style="border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px">
+            <legend style="font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; padding: 0; margin-bottom: 8px">Media</legend>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 16px">
+              <label><input type="checkbox" style="accent-color: #a4553b"> Books</label>
+              <label><input type="checkbox" checked style="accent-color: #a4553b"> DVD</label>
+              <label><input type="checkbox" style="accent-color: #a4553b"> Music</label>
+              <label><input type="checkbox" style="accent-color: #a4553b"> Equipment</label>
+            </div></fieldset>
+          <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">On loan to
+            <input value="" placeholder="* for anyone" style="font-family: 'Fraunces', serif; font-weight: 300; font-size: 24px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629"></label>
+          <label style="grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Idea or mood — searched by meaning
+            <input value="gentle, flying machines, growing up" style="font-family: 'Fraunces', serif; font-style: italic; font-weight: 300; font-size: 24px; letter-spacing: 0; text-transform: none; border: 0; border-bottom: 1px solid #1f2629; background: transparent; padding: 4px 0; color: #1f2629"></label>
+          <label style="grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Query, as text
+            <input value='creator:miyazaki AND year:1984..2001 AND type:dvd AND idea:"gentle, flying machines"' style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; letter-spacing: 0; text-transform: none; border: 1px solid #1f2629; background: #fff; padding: 12px; color: #1f2629"></label>
+        </div>
+        <div style="display: flex; gap: 14px; flex-wrap: wrap">
+          <a href="C-Results.dc.html" style="background: #1f2629; color: #fbf8f2; text-decoration: none; font-weight: 600; padding: 0 26px; min-height: 48px; display: flex; align-items: center">Search</a>
+          <button type="button" style="font: inherit; background: none; border: 1px solid #1f2629; color: #1f2629; padding: 0 18px; min-height: 48px; cursor: pointer">Reset</button>
+        </div>
+      </div>
+      <aside style="flex: 1 1 260px; max-width: 320px; border-left: 1px solid #c9c4b8; padding-left: 28px; display: flex; flex-direction: column; gap: 12px">
+        <h3 style="margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase">Search grammar</h3>
+        <dl style="margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 10px 14px; font-size: 15px; line-height: 1.4">
+          <dt style="font-family: 'IBM Plex Mono', monospace; color: #a4553b">sea*</dt><dd style="margin: 0">sea, seas, seaside…</dd>
+          <dt style="font-family: 'IBM Plex Mono', monospace; color: #a4553b">gr?y</dt><dd style="margin: 0">grey or gray</dd>
+          <dt style="font-family: 'IBM Plex Mono', monospace; color: #a4553b">AND OR NOT</dt><dd style="margin: 0">combine; group with ( )</dd>
+          <dt style="font-family: 'IBM Plex Mono', monospace; color: #a4553b">"…"</dt><dd style="margin: 0">exact phrase</dd>
+          <dt style="font-family: 'IBM Plex Mono', monospace; color: #a4553b">year:</dt><dd style="margin: 0">1990 or 1984..2001</dd>
+          <dt style="font-family: 'IBM Plex Mono', monospace; color: #a4553b">creator:</dt><dd style="margin: 0">author, artist, director</dd>
+          <dt style="font-family: 'IBM Plex Mono', monospace; color: #a4553b">idea:</dt><dd style="margin: 0">matched by meaning</dd>
+          <dt style="font-family: 'IBM Plex Mono', monospace; color: #a4553b">in:</dt><dd style="margin: 0">a place, e.g. in:shed</dd>
+          <dt style="font-family: 'IBM Plex Mono', monospace; color: #a4553b">loan:*</dt><dd style="margin: 0">anything lent out; loan:sam for one borrower</dd>
+        </dl>
+      </aside>
+    </section>
+    </sc-if>
+  </div>
+
+  <aside style="position: absolute; top: 58px; right: clamp(16px, 4vw, 48px); width: 300px; max-width: calc(100% - 32px); background: #fbf8f2; border: 1.5px solid #1f2629; box-shadow: 8px 8px 0 #1f2629; z-index: 2">
+    <form style="padding: 20px 22px 22px; display: flex; flex-direction: column; gap: 12px">
+      <span style="font-family: 'Fraunces', serif; font-weight: 500; font-size: 24px">Librarian's desk</span>
+      <label for="c-pw" style="font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase">Admin password</label>
+      <input id="c-pw" type="password" value="••••••••" style="font: inherit; font-size: 20px; border: 0; border-bottom: 1.5px solid #1f2629; background: transparent; padding: 6px 0">
+      <span style="font-size: 13px; color: #4b5458; line-height: 1.5">Editing stays unlocked for this browser session only.</span>
+      <button type="button" style="font: inherit; font-weight: 600; background: #1f2629; color: #fbf8f2; border: 0; min-height: 46px; cursor: pointer">Unlock editing</button>
+    </form>
+  </aside>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"libraryTitle":{"editor":"text","default":"The Tallow Lane Library"},"$preview":{"width":1280,"height":1240}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const advOpen = !!(this.state && this.state.advOpen);
+    return {
+      libraryTitle: this.props.libraryTitle ?? 'The Tallow Lane Library',
+      advOpen,
+      advExpanded: advOpen ? 'true' : 'false',
+      advLabel: advOpen ? 'Advanced search ↑' : 'Advanced search ↓',
+      toggleAdv: () => this.setState({ advOpen: !advOpen })
+    };
+  }
+}
+</script>
+</body>
+</html>

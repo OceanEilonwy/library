@@ -72,6 +72,11 @@ jobs:
             rip
             .
 
+      # tests/licences.rs runs cargo-deny offline, and cargo metadata needs
+      # every platform's crates, not just the ones this Linux build uses.
+      - name: Fetch every platform's crates
+        run: cargo fetch --locked
+
       - name: Formatting
         run: cargo fmt --check
 

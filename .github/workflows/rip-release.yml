@@ -210,19 +210,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Homebrew's bottles need at least the macOS they were built
-          # for, so the oldest runner of each architecture gives the widest
-          # reach.
+          # The bundled Homebrew bottles need at least the macOS they were
+          # built for (Sequoia bottles on Apple silicon, Sonoma on Intel);
+          # the "App bundle" step checks this against `minimum`.
           - arch: arm64
-            runner: macos-14
+            runner: macos-15
+            minimum: "15.0"
           - arch: x86_64
             runner: macos-15-intel
+            minimum: "14.0"
     runs-on: ${{ matrix.runner }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
       ARCH: ${{ matrix.arch }}
-      # The Homebrew bottles bundled with the app are built for macOS 14.
-      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.minimum }}
     steps:
       - uses: actions/checkout@v5
 
@@ -284,6 +285,19 @@ jobs:
           </plist>
           PLIST
           plutil -lint "$app/Contents/Info.plist"
+          # Every Mach-O file in the bundle must run on the macOS the app
+          # says it needs.
+          for file in "$app/Contents/MacOS/library-rip" "$app"/Contents/Frameworks/*.dylib; do
+            minos=$(vtool -show-build "$file" | awk '/minos/ { print $2; exit }')
+            echo "$(basename "$file"): minos $minos"
+            if [ -z "$minos" ] || awk -v a="$minos" -v b="$MACOSX_DEPLOYMENT_TARGET" 'BEGIN {
+                split(a, x, "."); split(b, y, ".")
+                exit !(x[1] + 0 > y[1] + 0 || (x[1] + 0 == y[1] + 0 && x[2] + 0 > y[2] + 0))
+              }'; then
+              echo "::error::$(basename "$file") needs macOS $minos, newer than $MACOSX_DEPLOYMENT_TARGET"
+              exit 1
+            fi
+          done
           cp LICENSE rip/ui/fonts/*-OFL.txt "$app/Contents/Resources/"
           # Ad-hoc signature: needed on Apple silicon after changing the
           # binary's library paths. Not a Developer ID signature.

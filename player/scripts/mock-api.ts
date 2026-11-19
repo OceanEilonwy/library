@@ -140,9 +140,16 @@ add(4, 'video', 'Spirited Away', null, 7500, 1, [
 add(5, 'document', 'Field guide (PDF)', null, null);
 ['Angel', 'Risingson', 'Teardrop'].forEach((t, i) => add(6, 'audio', t, i + 1, 30));
 
-type Account = { id: number; username: string; email: string; access: 'child' | 'adult'; password: string };
+type Account = {
+  id: number;
+  username: string;
+  email: string;
+  access: 'child' | 'adult';
+  password: string;
+  approved: boolean;
+};
 const accounts: Account[] = [
-  { id: 1, username: 'demo', email: 'demo@example.org', access: 'adult', password: 'password' },
+  { id: 1, username: 'demo', email: 'demo@example.org', access: 'adult', password: 'password', approved: true },
 ];
 const sessions = new Map<string, number>();
 const favourites = new Map<number, number[]>();
@@ -288,6 +295,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     const login = String(body.login ?? '').toLowerCase();
     const account = accounts.find((a) => a.username.toLowerCase() === login || a.email.toLowerCase() === login);
     if (!account || account.password !== body.password) return json(res, 401, { error: 'Wrong username or password.' });
+    if (!account.approved) return json(res, 403, { error: 'Your account is waiting for a librarian to approve it.' });
     return signIn(res, account);
   }
   if (path === '/api/account/register' && method === 'POST') {
@@ -305,11 +313,16 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL) {
       email: String(body.email),
       access: 'child',
       password: String(body.password),
+      // The mock has no librarian: approve it a few seconds later so the flow can be tried.
+      approved: false,
     };
     accounts.push(account);
-    signIn(res, account);
-    res.statusCode = 201;
-    return;
+    setTimeout(() => (account.approved = true), 5000);
+    return json(res, 202, {
+      status: 'pending',
+      message:
+        'Thanks! A librarian needs to approve your account before you can sign in. (The mock approves it in 5 seconds.)',
+    });
   }
   if (path === '/api/account/logout') {
     res.setHeader('Set-Cookie', 'library_account=; Path=/; Max-Age=0');

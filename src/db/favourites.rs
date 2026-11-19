@@ -39,7 +39,7 @@ pub fn list(conn: &Connection, account_id: i64, adult: bool) -> Result<Vec<Media
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::accounts::{self, Access};
+    use crate::db::accounts::{self, Access, Status};
     use crate::db::items::{self, tests::input};
     use crate::db::media_files::tests::new_file;
     use crate::db::testing::temp_db;
@@ -48,7 +48,7 @@ mod tests {
     fn add_list_remove() {
         let (db, _d) = temp_db();
         db.write_blocking(|c| {
-            let acc = accounts::create(c, "kiddo", "k@x", "h", Access::Child)?;
+            let acc = accounts::create(c, "kiddo", "k@x", "h", Access::Child, Status::Approved)?;
             let open = items::create(c, &input(c, "Songs", ""))?;
             let mut late = input(c, "Late", "");
             late.restricted = true;

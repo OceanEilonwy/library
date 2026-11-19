@@ -6,7 +6,8 @@ here in the same change.
 
 ## Goals (from the brief)
 
-1. Simple accounts: username, email, password.
+1. Simple accounts: username, email, password. Every account is approved
+   by a librarian before it can be used.
 2. Digital media (PDFs, music, video…) needs an account to access.
 3. An admin sets an account's access level: `child` or `adult`.
 4. An admin marks an item `restricted`: only adults can access its media.
@@ -37,13 +38,24 @@ here in the same change.
 - **Admin** stays what it is today: whoever has the admin password on the
   htmx site (the "Librarian"). Admin features (accounts, restriction,
   uploads) live on the Librarian's desk, not in the PWA.
-- **Registration is open** from the PWA. New accounts start as `child`
-  (safe default); the Librarian promotes them to `adult`. Configurable with
+- **Registration is open** from the PWA, but **every account must be
+  approved by the Librarian** before it can be used. Registering makes an
+  account with `status = 'pending'` and no session; the Librarian approves
+  it on `/admin/accounts` (choosing `child` or `adult` at the same time) or
+  rejects it (which deletes it). Signing in with the right password to a
+  pending account answers 403 (a wrong password is still 401, so pending
+  status is never revealed to someone guessing). The `SignedIn` extractor
+  also refuses sessions of accounts that are not approved (401), in case
+  one ever exists.
+- New accounts ask for `child` access (safe default), which is also the
+  choice pre-selected when approving; the Librarian can promote them to
+  `adult` later. Configurable with
   `[accounts] default_access = "child" | "adult"` in `library.toml`, and
-  `[accounts] open_registration = true | false` (default true). The CLI gains
+  `[accounts] open_registration = true | false` (default true). The CLI has
   `library create-account <username> <email> [--adult]` (prompts for the
-  password) so a first account can be made without the PWA.
-- **Sessions**: on login/registration the server creates a random 32-byte
+  password; the account is approved straight away, since it is the
+  Librarian acting) and `library approve-account <username> [--adult]`.
+- **Sessions**: on login the server creates a random 32-byte
   token, stores its SHA-256 in `account_sessions`, and sets cookie
   `library_account=<token>`; `HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000`
   (plus `Secure` when the request came over HTTPS / `X-Forwarded-Proto: https`).
@@ -79,7 +91,10 @@ CREATE TABLE accounts (
     email         TEXT NOT NULL UNIQUE COLLATE NOCASE,
     password_hash TEXT NOT NULL,              -- argon2id PHC string
     access        TEXT NOT NULL DEFAULT 'child' CHECK (access IN ('child','adult')),
-    created_at    INTEGER NOT NULL
+    -- A librarian approves every account before it can sign in.
+    status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved')),
+    created_at    INTEGER NOT NULL,
+    approved_at   INTEGER                     -- NULL while pending
 ) STRICT;
 
 CREATE TABLE account_sessions (
@@ -155,6 +170,8 @@ errors (422) add `"fields": {"username": "Already taken"}`.
 ```ts
 type Access = "child" | "adult";
 type Account = { id: number; username: string; email: string; access: Access };
+// The answer to registering (202). `message` is plain English for the screen.
+type RegistrationPending = { status: "pending"; message: string };
 
 type MediaKind = "audio" | "video" | "document";
 type Subtitle = { id: number; language: string; label: string; url: string }; // url = /api/subtitles/{id}
@@ -191,8 +208,8 @@ type Playlist = PlaylistSummary & { entries: MediaFile[] };
 
 | Method & path | Auth | Body → Response |
 |---|---|---|
-| `POST /api/account/register` | none | `{username,email,password}` → 201 `Account` + cookie. 403 if registration closed. Rules: username 3–32 chars `[A-Za-z0-9_.-]`, email contains `@`, password ≥ 8 chars. |
-| `POST /api/account/login` | none | `{login,password}` (username or email) → 200 `Account` + cookie; 401 wrong; 429 rate-limited |
+| `POST /api/account/register` | none | `{username,email,password}` → 202 `RegistrationPending`, **no cookie** (the account waits for the Librarian). 403 if registration closed (or too many accounts were made in the last hour). Rules: username 3–32 chars `[A-Za-z0-9_.-]`, email contains `@`, password ≥ 8 chars. |
+| `POST /api/account/login` | none | `{login,password}` (username or email) → 200 `Account` + cookie; 401 wrong; 403 `{"error":"Your account is waiting for a librarian to approve it."}` when the password is right but the account isn't approved yet (no cookie); 429 rate-limited |
 | `POST /api/account/logout` | any | → 204, clears cookie |
 | `GET /api/account/me` | account | → `Account` (401 if none) |
 | `GET /api/items?q=&kind=&type=&offset=&limit=` | account | → `{items: ItemSummary[], total: number}`; only items with ≥1 media file the viewer may access; `q` is a plain substring match on title/creator; newest first by default (the item whose latest file was uploaded most recently), `sort=title` alphabetical; `limit` defaults to 50, at most 200 |
@@ -281,9 +298,17 @@ JSON `POST/PUT/PATCH/DELETE` must pass the existing same-origin check
     `POST …/media/{mid}/move` (`dir=up|down`), `POST …/media/{mid}/delete`,
     `POST /admin/items/{id}/subtitles/{sid}/delete` answer that fragment to
     htmx and redirect otherwise.
-- `/admin/accounts`: list accounts (username, email, access, created),
-  change access with a select (htmx), delete an account (confirm). Linked
-  from the Librarian's desk.
+- `/admin/accounts`: a **Waiting for approval** section at the top when any
+  account is pending (username, email, requested date), each with an access
+  select (pre-set from `default_access`) and **Approve**, and **Reject**
+  (confirm; deletes the account). Both are htmx posts answering the
+  `#account-lists` fragment (and redirect without htmx):
+  `POST /admin/accounts/{id}/approve` (`access=child|adult`; 404 if not
+  pending) and `POST /admin/accounts/{id}/reject` (404 if not pending).
+  Below, approved accounts (username, email, access, created): change access
+  with a select (htmx), delete an account (confirm). Linked from the
+  Librarian's desk, whose link shows a count badge while accounts are
+  waiting.
 
 ## PWA behaviour
 
@@ -291,6 +316,11 @@ JSON `POST/PUT/PATCH/DELETE` must pass the existing same-origin check
   favourites, playlists), Library (search, filter by kind), Item, Playlists,
   Playlist, Favourites, History, Downloads, Video player, Document viewer,
   Account (login/register/logout), Settings/about with version.
+- Registering never signs in: the app shows an **Account requested** screen
+  ("A librarian needs to approve it before you can sign in") with the
+  server's message and a "Back to sign in" button. Signing in to an account
+  that is still waiting shows a "Not approved yet" notice with the server's
+  403 message, distinct from the wrong-password error.
 - One persistent `<audio>` element for music; mini-player bar above the
   bottom nav; expands to a full "Now playing" view with artwork, title,
   scrub bar (pointer + keyboard), back 10 s, previous, play/pause, next,
@@ -372,6 +402,7 @@ npm --prefix player ci && npm --prefix player run build
 scripts/dev-seed.py                               # wipes and seeds ./data-dev
 cargo run -- --config library.dev.toml serve      # http://127.0.0.1:8090
 open http://127.0.0.1:8090/player/                # adult or kid / password123
+                                                  # (newbie / password123 waits for approval)
 ```
 
 `library.dev.toml` listens on 8090 rather than 8080 so it can run beside a
@@ -383,7 +414,9 @@ real library; the admin password is `librarian`.
 The global setup seeds a temporary data folder with `scripts/dev-seed.py`,
 which uploads its sample files through `POST /admin/items/{id}/media/upload`,
 starts the server on `E2E_PORT` (default 18431) and stops it afterwards. The
-specs cover registration and sign-in, child/adult visibility of items and
+specs cover registration (the request, the waiting screen, the
+librarian approving it on `/admin/accounts`, then signing in), turning a
+request down, child/adult visibility of items and
 playlists, playback (next, previous, ±10 s), the Up next order, history,
 favourites, playlists (create, add, reorder, rename, delete, 403 for
 others), downloading and playing offline, clearing downloads, film

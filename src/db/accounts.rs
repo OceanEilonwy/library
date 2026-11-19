@@ -51,12 +51,41 @@ impl Access {
     }
 }
 
+/// Whether a librarian has let an account in yet. Only approved accounts
+/// can sign in or use a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Status {
+    /// Registered from the Player, waiting for a librarian.
+    #[default]
+    Pending,
+    /// Let in by a librarian (or made by one with the CLI).
+    Approved,
+}
+
+impl Status {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Status::Pending => "pending",
+            Status::Approved => "approved",
+        }
+    }
+
+    /// Reads the stored word; anything unknown counts as pending (safe).
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "approved" => Status::Approved,
+            _ => Status::Pending,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Account {
     pub id: i64,
     pub username: String,
     pub email: String,
     pub access: Access,
+    pub status: Status,
     pub created_at: i64,
 }
 
@@ -67,12 +96,18 @@ impl Account {
             username: r.get(1)?,
             email: r.get(2)?,
             access: Access::parse(&r.get::<_, String>(3)?).unwrap_or_default(),
-            created_at: r.get(4)?,
+            status: Status::parse(&r.get::<_, String>(4)?),
+            created_at: r.get(5)?,
         })
+    }
+
+    /// Has a librarian let this account in?
+    pub fn approved(&self) -> bool {
+        self.status == Status::Approved
     }
 }
 
-const COLS: &str = "id, username, email, access, created_at";
+const COLS: &str = "id, username, email, access, status, created_at";
 
 /// Checks the registration rules; problems are keyed by field name.
 pub fn validate(username: &str, email: &str, password: &str) -> Invalid {
@@ -102,13 +137,15 @@ pub fn validate(username: &str, email: &str, password: &str) -> Invalid {
 }
 
 /// Creates an account. Fails with [`Invalid`] if the details break the rules
-/// or the username or email is already taken.
+/// or the username or email is already taken. Accounts registered from the
+/// Player start [`Status::Pending`]; the CLI makes them approved.
 pub fn create(
     conn: &Connection,
     username: &str,
     email: &str,
     password_hash: &str,
     access: Access,
+    status: Status,
 ) -> Result<Account> {
     let username = username.trim();
     let email = email.trim();
@@ -129,10 +166,20 @@ pub fn create(
     if !bad.is_empty() {
         return Err(bad.into());
     }
+    let ts = now();
+    let approved_at = (status == Status::Approved).then_some(ts);
     conn.execute(
-        "INSERT INTO accounts (username, email, password_hash, access, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![username, email, password_hash, access.as_str(), now()],
+        "INSERT INTO accounts (username, email, password_hash, access, status, created_at, approved_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            username,
+            email,
+            password_hash,
+            access.as_str(),
+            status.as_str(),
+            ts,
+            approved_at
+        ],
     )?;
     get(conn, conn.last_insert_rowid())?.ok_or_else(|| anyhow::anyhow!("account vanished"))
 }
@@ -158,7 +205,7 @@ pub fn for_login(conn: &Connection, login: &str) -> Result<Option<(Account, Stri
             "SELECT {COLS}, password_hash FROM accounts WHERE username = ?1 OR email = ?1
              ORDER BY username = ?1 DESC LIMIT 1"
         ))?
-        .query_row([login.trim()], |r| Ok((Account::from_row(r)?, r.get(5)?)))
+        .query_row([login.trim()], |r| Ok((Account::from_row(r)?, r.get(6)?)))
         .optional()?)
 }
 
@@ -169,6 +216,32 @@ pub fn list(conn: &Connection) -> Result<Vec<Account>> {
     ))?;
     let rows = stmt.query_map([], Account::from_row)?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// How many accounts are waiting for a librarian.
+pub fn pending_count(conn: &Connection) -> Result<i64> {
+    Ok(conn
+        .prepare_cached("SELECT count(*) FROM accounts WHERE status = 'pending'")?
+        .query_row([], |r| r.get(0))?)
+}
+
+/// Lets a pending account in with the given access. False if there is no
+/// such account or it was already approved.
+pub fn approve(conn: &Connection, id: i64, access: Access) -> Result<bool> {
+    Ok(conn.execute(
+        "UPDATE accounts SET status = 'approved', access = ?2, approved_at = ?3
+         WHERE id = ?1 AND status = 'pending'",
+        params![id, access.as_str(), now()],
+    )? > 0)
+}
+
+/// Turns down a pending account (deletes it). False if there is no such
+/// account or it has already been approved.
+pub fn reject(conn: &Connection, id: i64) -> Result<bool> {
+    Ok(conn.execute(
+        "DELETE FROM accounts WHERE id = ?1 AND status = 'pending'",
+        [id],
+    )? > 0)
 }
 
 /// Changes an account's access level; false if there is no such account.
@@ -211,12 +284,12 @@ pub fn session(conn: &Connection, token: &str) -> Result<Option<(Account, i64)>>
     }
     Ok(conn
         .prepare_cached(
-            "SELECT a.id, a.username, a.email, a.access, a.created_at, s.last_seen
+            "SELECT a.id, a.username, a.email, a.access, a.status, a.created_at, s.last_seen
              FROM account_sessions s JOIN accounts a ON a.id = s.account_id
              WHERE s.token_hash = ?1",
         )?
         .query_row([token_hash(token)], |r| {
-            Ok((Account::from_row(r)?, r.get(5)?))
+            Ok((Account::from_row(r)?, r.get(6)?))
         })
         .optional()?)
 }
@@ -263,9 +336,25 @@ mod tests {
     fn create_find_and_sessions() {
         let (db, _d) = temp_db();
         db.write_blocking(|c| {
-            let a = create(c, "Alice", "alice@example.org", "hash", Access::Child)?;
+            let a = create(
+                c,
+                "Alice",
+                "alice@example.org",
+                "hash",
+                Access::Child,
+                Status::Approved,
+            )?;
             assert_eq!(a.access, Access::Child);
-            let err = create(c, "alice", "ALICE@example.org", "h", Access::Adult).unwrap_err();
+            assert!(a.approved());
+            let err = create(
+                c,
+                "alice",
+                "ALICE@example.org",
+                "h",
+                Access::Adult,
+                Status::Pending,
+            )
+            .unwrap_err();
             let bad = err.downcast_ref::<Invalid>().expect("invalid");
             assert!(bad.get("username").is_some() && bad.get("email").is_some());
             assert_eq!(for_login(c, "ALICE")?.unwrap().0.id, a.id);
@@ -291,6 +380,51 @@ mod tests {
                 "sessions go with the account"
             );
             assert!(!delete(c, a.id)?);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn approving_and_rejecting() {
+        let (db, _d) = temp_db();
+        db.write_blocking(|c| {
+            let p = create(
+                c,
+                "pat",
+                "pat@example.org",
+                "h",
+                Access::Child,
+                Status::Pending,
+            )?;
+            let q = create(
+                c,
+                "quin",
+                "q@example.org",
+                "h",
+                Access::Child,
+                Status::Pending,
+            )?;
+            assert!(!p.approved());
+            assert_eq!(pending_count(c)?, 2);
+            let approved_at: Option<i64> = c.query_row(
+                "SELECT approved_at FROM accounts WHERE id = ?1",
+                [p.id],
+                |r| r.get(0),
+            )?;
+            assert!(approved_at.is_none());
+
+            assert!(approve(c, p.id, Access::Adult)?);
+            let p = get(c, p.id)?.unwrap();
+            assert!(p.approved() && p.access == Access::Adult);
+            assert!(!approve(c, p.id, Access::Child)?, "only once");
+            assert!(!reject(c, p.id)?, "approved accounts aren't rejected");
+            assert_eq!(pending_count(c)?, 1);
+
+            assert!(reject(c, q.id)?);
+            assert!(get(c, q.id)?.is_none());
+            assert_eq!(pending_count(c)?, 0);
+            assert!(Status::parse("nonsense") == Status::Pending);
             Ok(())
         })
         .unwrap();

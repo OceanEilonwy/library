@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { PASSWORD, itemPath, trackMenu } from './helpers';
+import { PASSWORD, approveAccount, itemPath, trackMenu } from './helpers';
 import { seed } from './state';
 
 test('make a playlist, fill it from an album, reorder, rename and delete it', async ({ page, browser }) => {
@@ -7,7 +7,12 @@ test('make a playlist, fill it from an album, reorder, rename and delete it', as
   const made = await page.request.post('/api/account/register', {
     data: { username: 'listmaker', email: 'listmaker@example.org', password: PASSWORD },
   });
-  expect(made.status()).toBe(201);
+  expect(made.status()).toBe(202);
+  await approveAccount(browser, 'listmaker');
+  const signedIn = await page.request.post('/api/account/login', {
+    data: { login: 'listmaker', password: PASSWORD },
+  });
+  expect(signedIn.status()).toBe(200);
 
   await page.goto('/player/playlists');
   await page.getByPlaceholder('Name a new playlist').fill('Road trip');

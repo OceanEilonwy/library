@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use super::AppState;
 use super::auth::{self, Throttle};
-use crate::db::accounts::{self, Access, Account};
+use crate::db::accounts::{self, Access, Account, Status};
 use crate::db::items::Invalid;
 use crate::db::now;
 
@@ -44,6 +44,12 @@ impl Default for Throttles {
 
 const LOGIN_LIMIT_ALL: usize = 100;
 
+/// Said when the right password is given for an account still waiting.
+const AWAITING_APPROVAL: &str = "Your account is waiting for a librarian to approve it.";
+/// Said after registering.
+const REGISTERED: &str = "Thanks! A librarian needs to approve your account before you can sign in. \
+     Try signing in again once they have.";
+
 // ---------- errors ----------
 
 /// An `/api` failure, answered as `{"error": "…"}` with its status.
@@ -51,6 +57,8 @@ const LOGIN_LIMIT_ALL: usize = 100;
 pub enum ApiError {
     Unauthorized,
     WrongPassword,
+    /// The password was right but no librarian has approved the account.
+    AwaitingApproval,
     Forbidden(String),
     NotFound,
     BadRequest(String),
@@ -89,6 +97,9 @@ impl IntoResponse for ApiError {
                 "That username or password isn't right.".to_owned(),
                 None,
             ),
+            ApiError::AwaitingApproval => {
+                (StatusCode::FORBIDDEN, AWAITING_APPROVAL.to_owned(), None)
+            }
             ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, m, None),
             ApiError::NotFound => (
                 StatusCode::NOT_FOUND,
@@ -164,6 +175,11 @@ impl FromRequestParts<AppState> for SignedIn {
             .read(move |c| accounts::session(c, &lookup))
             .await?
             .ok_or(ApiError::Unauthorized)?;
+        // Sessions are only made for approved accounts; this is a second
+        // line of defence.
+        if !account.approved() {
+            return Err(ApiError::Unauthorized);
+        }
         if now() - last_seen > TOUCH_EVERY_SECS
             && let Err(e) = state
                 .db
@@ -196,6 +212,13 @@ impl From<&Account> for AccountJson {
             access: a.access,
         }
     }
+}
+
+/// The answer to registering: the account exists but waits for a librarian.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingJson {
+    pub status: String,
+    pub message: String,
 }
 
 #[derive(Deserialize)]
@@ -248,9 +271,10 @@ fn dummy_hash() -> &'static str {
 
 // ---------- handlers ----------
 
+/// Makes a pending account. No session is started: a librarian approves
+/// the account first.
 pub async fn register(
     State(st): State<AppState>,
-    headers: HeaderMap,
     ApiJson(body): ApiJson<RegisterBody>,
 ) -> ApiResult {
     if !st.cfg.accounts.open_registration {
@@ -273,22 +297,20 @@ pub async fn register(
         .map_err(|e| ApiError::Internal(e.into()))??;
     let access = st.cfg.accounts.default_access;
     let (username, email) = (body.username, body.email);
-    let (account, token) = st
+    let account = st
         .db
-        .write(move |c| {
-            let tx = c.transaction()?;
-            let account = accounts::create(&tx, &username, &email, &hash, access)?;
-            let token = accounts::create_session(&tx, account.id)?;
-            tx.commit()?;
-            Ok((account, token))
-        })
+        .write(move |c| accounts::create(c, &username, &email, &hash, access, Status::Pending))
         .await?;
     st.throttles.register.record("*");
-    tracing::info!(username = %account.username, "account registered");
-    with_cookie(
-        (StatusCode::CREATED, Json(AccountJson::from(&account))).into_response(),
-        &session_cookie(&token, super::is_https(&headers)),
+    tracing::info!(username = %account.username, "account registered, waiting for approval");
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(PendingJson {
+            status: Status::Pending.as_str().to_owned(),
+            message: REGISTERED.to_owned(),
+        }),
     )
+        .into_response())
 }
 
 pub async fn login(
@@ -332,6 +354,11 @@ pub async fn login(
         return Err(ApiError::WrongPassword);
     };
     throttle.clear(&key);
+    // Only said once the password is right, so it reveals nothing to
+    // someone guessing.
+    if !account.approved() {
+        return Err(ApiError::AwaitingApproval);
+    }
     let id = account.id;
     let token = st
         .db

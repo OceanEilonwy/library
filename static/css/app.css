@@ -484,3 +484,12 @@ footer.site { border-top: 1px solid var(--ink); margin-top: 48px; padding: 18px 
   .drop-zone { padding: 28px 16px; }
   .media-edit label.mini.grow { flex-basis: 100%; }
 }
+
+/* ---------- accounts waiting for approval ---------- */
+.count-badge {
+  display: inline-block; min-width: 1.6em; margin-left: 8px; padding: 0 6px; border-radius: 999px;
+  background: var(--accent); color: var(--paper); font-size: 12px; font-weight: 600; line-height: 1.6;
+  text-align: center; letter-spacing: 0; vertical-align: 1px;
+}
+.waiting { border: 1.5px solid var(--accent); padding: 4px 16px 8px; margin-bottom: 28px; }
+.waiting .kicker { display: flex; align-items: center; }

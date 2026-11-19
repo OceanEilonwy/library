@@ -100,6 +100,24 @@ describe('session', () => {
   });
 });
 
+describe('registration', () => {
+  test('asking for an account does not sign in or tell listeners', async () => {
+    const services = makeServices((url) =>
+      url === '/api/account/register'
+        ? jsonResponse(202, { status: 'pending', message: 'Waiting for a librarian.' })
+        : jsonResponse(401, { error: 'Please sign in.' }),
+    );
+    await services.session.start();
+    const listener = vi.fn();
+    services.session.onSignedIn(listener);
+    const result = await services.session.register('newbie', 'n@example.org', 'password123');
+    expect(result).toEqual({ status: 'pending', message: 'Waiting for a librarian.' });
+    expect(listener).not.toHaveBeenCalled();
+    expect(services.session.status()).toBe('signed-out');
+    expect(services.session.account()).toBeNull();
+  });
+});
+
 describe('favourites', () => {
   test('toggles straight away and puts it back if the server refuses', async () => {
     const notify = vi.fn();

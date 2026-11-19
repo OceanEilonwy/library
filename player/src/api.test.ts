@@ -65,6 +65,27 @@ test('a 401 from login or me is just an answer, not an expired session', async (
   expect(onUnauthorized).not.toHaveBeenCalled();
 });
 
+test('registering answers that the account waits for a librarian', async () => {
+  const pending = { status: 'pending', message: 'A librarian needs to approve your account.' };
+  const { api, fetch } = client(() => json(202, pending));
+  await expect(api.register({ username: 'newbie', email: 'n@example.org', password: 'password123' })).resolves.toEqual(
+    pending,
+  );
+  expect(fetch.mock.calls[0]?.[0]).toBe('/api/account/register');
+});
+
+test('a 403 from login (waiting for approval) is an answer, not an expired session', async () => {
+  const { api, onUnauthorized } = client(() =>
+    json(403, { error: 'Your account is waiting for a librarian to approve it.' }),
+  );
+  await expect(api.login({ login: 'newbie', password: 'password123' })).rejects.toMatchObject({
+    kind: 'forbidden',
+    status: 403,
+    message: 'Your account is waiting for a librarian to approve it.',
+  });
+  expect(onUnauthorized).not.toHaveBeenCalled();
+});
+
 test('validation errors carry field messages', async () => {
   const { api } = client(() => json(422, { error: 'Check the form.', fields: { username: 'Already taken', bad: 3 } }));
   await expect(api.register({ username: 'al', email: 'x', password: 'y' })).rejects.toMatchObject({

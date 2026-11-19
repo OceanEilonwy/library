@@ -231,7 +231,7 @@ pub fn all_entry_ids(conn: &Connection, id: i64) -> Result<Vec<i64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::accounts::{self, Access};
+    use crate::db::accounts::{self, Access, Status};
     use crate::db::items::{self, tests::input};
     use crate::db::media_files::tests::new_file;
     use crate::db::testing::temp_db;
@@ -240,8 +240,9 @@ mod tests {
     fn visibility_rule_and_hidden_entries_survive_rewrites() {
         let (db, _d) = temp_db();
         db.write_blocking(|c| {
-            let adult = accounts::create(c, "grownup", "g@x", "h", Access::Adult)?;
-            let child = accounts::create(c, "kiddo", "k@x", "h", Access::Child)?;
+            let adult =
+                accounts::create(c, "grownup", "g@x", "h", Access::Adult, Status::Approved)?;
+            let child = accounts::create(c, "kiddo", "k@x", "h", Access::Child, Status::Approved)?;
             let open = items::create(c, &input(c, "Songs", ""))?;
             let mut late = input(c, "Late", "");
             late.restricted = true;

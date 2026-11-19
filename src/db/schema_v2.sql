@@ -10,7 +10,10 @@ CREATE TABLE accounts (
     email         TEXT NOT NULL UNIQUE COLLATE NOCASE,
     password_hash TEXT NOT NULL,              -- argon2id PHC string
     access        TEXT NOT NULL DEFAULT 'child' CHECK (access IN ('child','adult')),
-    created_at    INTEGER NOT NULL
+    -- A librarian approves every account before it can sign in.
+    status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved')),
+    created_at    INTEGER NOT NULL,
+    approved_at   INTEGER                     -- NULL while pending
 ) STRICT;
 
 CREATE TABLE account_sessions (

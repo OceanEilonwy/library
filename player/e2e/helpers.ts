@@ -1,8 +1,36 @@
 // Small steps the end-to-end tests share.
 
-import { expect, type Page } from '@playwright/test';
+import { expect, type Browser, type Page } from '@playwright/test';
 
 export const PASSWORD = 'password123';
+
+/** Unlocks editing on the htmx site with the librarian's password. */
+export async function unlockAsLibrarian(page: Page): Promise<void> {
+  await page.goto('/unlock?next=/');
+  const password = page.locator('#unlock-password-page');
+  await password.fill('librarian');
+  await password.press('Enter');
+  await expect(page).toHaveURL(/\/$/);
+}
+
+/**
+ * Approves a waiting account on the Librarian's desk, in a separate browser
+ * context (so the caller's page stays a plain Player visitor).
+ */
+export async function approveAccount(browser: Browser, username: string, access: 'Child' | 'Adult' = 'Child') {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    await unlockAsLibrarian(page);
+    await page.goto('/admin/accounts');
+    const row = page.locator('li', { has: page.getByRole('button', { name: `Approve ${username}` }) });
+    await row.getByLabel(`Access for ${username}`).selectOption({ label: access });
+    await row.getByRole('button', { name: `Approve ${username}` }).click();
+    await expect(page.getByRole('status')).toContainText(`Approved ${username}`);
+  } finally {
+    await context.close();
+  }
+}
 
 /** Signs in from the Player's welcome screen and waits for Home. */
 export async function signIn(page: Page, login: string, password = PASSWORD): Promise<void> {

@@ -833,8 +833,8 @@ impl App {
         self.send(b.body(body).unwrap()).await
     }
 
-    /// Registers an account and returns its cookie (`library_account=…`).
-    async fn register(&self, username: &str) -> String {
+    /// Registers an account, which then waits for a librarian.
+    async fn register_pending(&self, username: &str) -> Resp {
         let r = self
             .api(
                 "POST",
@@ -847,9 +847,52 @@ impl App {
                 None,
             )
             .await;
-        assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+        assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.body);
+        assert!(r.headers.get(header::SET_COOKIE).is_none());
+        r
+    }
+
+    /// Logs in with the password every test account has.
+    async fn login(&self, login: &str) -> Resp {
+        self.api(
+            "POST",
+            "/api/account/login",
+            Some(serde_json::json!({"login": login, "password": "long enough password"})),
+            None,
+        )
+        .await
+    }
+
+    /// The session cookie (`library_account=…`) a response set.
+    fn cookie_of(r: &Resp) -> String {
         let set = r.headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
         set.split(';').next().unwrap().to_owned()
+    }
+
+    fn account_id(&self, username: &str) -> i64 {
+        let name = username.to_owned();
+        self.state
+            .db
+            .read_blocking(move |c| Ok(crate::db::accounts::by_username(c, &name)?.unwrap().id))
+            .unwrap()
+    }
+
+    /// Registers an account, approves it (keeping the access it asked
+    /// with) and logs in; returns its cookie (`library_account=…`).
+    async fn register(&self, username: &str) -> String {
+        self.register_pending(username).await;
+        let name = username.to_owned();
+        self.state
+            .db
+            .write_blocking(move |c| {
+                let a = crate::db::accounts::by_username(c, &name)?.unwrap();
+                assert!(crate::db::accounts::approve(c, a.id, a.access)?);
+                Ok(())
+            })
+            .unwrap();
+        let r = self.login(username).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        Self::cookie_of(&r)
     }
 
     /// Registers an account with adult access.
@@ -1065,6 +1108,188 @@ async fn accounts_register_login_logout_and_me() {
         .body(Body::from("{}"))
         .unwrap();
     assert_eq!(a.send(req).await.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn registration_waits_for_a_librarian() {
+    let a = app();
+    let r = a.register_pending("newbie").await;
+    let body = json(&r);
+    assert_eq!(body["status"], "pending");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("librarian needs to approve")
+    );
+
+    // The right password says it is waiting; no session is made.
+    let r = a.login("newbie").await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        json(&r)["error"],
+        "Your account is waiting for a librarian to approve it."
+    );
+    assert!(r.headers.get(header::SET_COOKIE).is_none());
+    // A wrong password reveals nothing about the account.
+    let r = a
+        .api(
+            "POST",
+            "/api/account/login",
+            Some(serde_json::json!({"login": "newbie", "password": "wrong password"})),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(json(&r)["error"], "That username or password isn't right.");
+
+    // The desk shows a badge; the accounts page lists the request.
+    let desk = a.get("/admin", true).await;
+    assert!(desk.body.contains("count-badge") && desk.body.contains("1"));
+    let page = a.get("/admin/accounts", true).await;
+    assert!(page.body.contains("Waiting for approval"));
+    assert!(page.body.contains("newbie@example.org"));
+    assert!(page.body.contains("/approve") && page.body.contains("/reject"));
+
+    // Only the librarian can approve.
+    let id = a.account_id("newbie");
+    let r = a
+        .post(
+            &format!("/admin/accounts/{id}/approve"),
+            "access=adult",
+            false,
+            false,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert_eq!(a.login("newbie").await.status, StatusCode::FORBIDDEN);
+    let r = a
+        .post(
+            &format!("/admin/accounts/{id}/approve"),
+            "access=teen",
+            true,
+            true,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+
+    // Approving (htmx) answers the lists, with the account moved across.
+    let r = a
+        .post(
+            &format!("/admin/accounts/{id}/approve"),
+            "access=adult",
+            true,
+            true,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(!r.body.contains("<html") && r.body.contains("id=\"account-lists\""));
+    assert!(r.body.contains("Approved newbie with adult access"));
+    assert!(!r.body.contains("Waiting for approval"));
+    assert!(r.body.contains(&format!("id=\"account-{id}\"")));
+    // Approving twice finds nothing to approve.
+    let r = a
+        .post(
+            &format!("/admin/accounts/{id}/approve"),
+            "access=child",
+            true,
+            false,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+
+    let r = a.login("newbie").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let cookie = App::cookie_of(&r);
+    let me = json(&a.api("GET", "/api/account/me", None, Some(&cookie)).await);
+    assert_eq!(me["access"], "adult");
+    assert!(!a.get("/admin", true).await.body.contains("count-badge"));
+}
+
+#[tokio::test]
+async fn rejecting_a_request_deletes_it() {
+    let a = app();
+    a.register_pending("spammer").await;
+    let id = a.account_id("spammer");
+    let r = a
+        .post(&format!("/admin/accounts/{id}/reject"), "", false, false)
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    let r = a
+        .post(&format!("/admin/accounts/{id}/reject"), "", true, false)
+        .await;
+    assert_eq!(
+        r.headers.get(header::LOCATION).unwrap(),
+        "/admin/accounts?msg=rejected"
+    );
+    assert!(
+        a.state
+            .db
+            .read_blocking(move |c| crate::db::accounts::get(c, id))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(a.login("spammer").await.status, StatusCode::UNAUTHORIZED);
+    // The name is free again.
+    a.register_pending("spammer").await;
+    let id = a.account_id("spammer");
+    let r = a
+        .post(&format!("/admin/accounts/{id}/reject"), "", true, true)
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body.contains("Turned down spammer"));
+    assert!(r.body.contains("No accounts yet."));
+
+    // An approved account is deleted with Delete, not Reject.
+    a.register("member").await;
+    let id = a.account_id("member");
+    let r = a
+        .post(&format!("/admin/accounts/{id}/reject"), "", true, false)
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    assert_eq!(a.login("member").await.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn sessions_of_unapproved_accounts_are_refused() {
+    let a = app();
+    let cookie = a.register("drifter").await;
+    let r = a.api("GET", "/api/account/me", None, Some(&cookie)).await;
+    assert_eq!(r.status, StatusCode::OK);
+    // Should an account ever go back to waiting, its sessions stop working.
+    let id = a.account_id("drifter");
+    a.state
+        .db
+        .write_blocking(move |c| {
+            c.execute("UPDATE accounts SET status = 'pending' WHERE id = ?1", [id])?;
+            Ok(())
+        })
+        .unwrap();
+    for uri in ["/api/account/me", "/api/items", "/api/playlists"] {
+        let r = a.api("GET", uri, None, Some(&cookie)).await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn admin_account_pages_require_unlocking() {
+    let a = app();
+    a.register_pending("waiting").await;
+    let id = a.account_id("waiting");
+    let r = a.get("/admin/accounts", false).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    for path in ["approve", "reject", "access", "delete"] {
+        let r = a
+            .post(
+                &format!("/admin/accounts/{id}/{path}"),
+                "access=adult",
+                false,
+                true,
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{path}");
+    }
+    assert_eq!(a.login("waiting").await.status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

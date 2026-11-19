@@ -42,6 +42,8 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/places/{id}/rename", post(rename_place))
         .route("/admin/places/{id}/delete", post(delete_place))
         .route("/admin/accounts", get(accounts_page))
+        .route("/admin/accounts/{id}/approve", post(approve_account))
+        .route("/admin/accounts/{id}/reject", post(reject_account))
         .route("/admin/accounts/{id}/access", post(set_access))
         .route("/admin/accounts/{id}/delete", post(delete_account))
 }
@@ -710,7 +712,7 @@ pub async fn desk(
         (true, true) if st.semantic.is_indexing() => "indexing",
         (true, true) => "ready",
     };
-    let (count, out, pending, places, types_fields, tagline) = st
+    let (count, out, pending, places, types_fields, tagline, waiting) = st
         .db
         .read(|c| {
             let count = items::count(c)?;
@@ -731,7 +733,8 @@ pub async fn desk(
                 tf.push((t, f));
             }
             let tagline = settings::get(c, settings::TAGLINE)?;
-            Ok((count, out, pending, places, tf, tagline))
+            let waiting = accounts::pending_count(c)?;
+            Ok((count, out, pending, places, tf, tagline, waiting))
         })
         .await?;
     let flash = match p.msg.as_str() {
@@ -755,6 +758,7 @@ pub async fn desk(
             tagline: &tagline,
             places: &places,
             types: &types_fields,
+            accounts_waiting: waiting,
             flash,
         },
     )))
@@ -815,9 +819,82 @@ pub async fn accounts_page(
     let flash = match p.msg.as_str() {
         "removed" => Some("Account deleted."),
         "saved" => Some("Saved."),
+        "approved" => Some("Approved. They can sign in now."),
+        "rejected" => Some("Request turned down; the account was deleted."),
         _ => None,
     };
-    Ok(html(av::accounts_page(&ctx, &list, flash)))
+    Ok(html(av::accounts_page(
+        &ctx,
+        &list,
+        st.cfg.accounts.default_access,
+        flash,
+    )))
+}
+
+/// The account lists again, for htmx after approving or rejecting.
+async fn account_lists(st: &AppState, note: &str) -> Res {
+    let list = st.db.read(accounts::list).await?;
+    Ok(html(av::account_lists(
+        &list,
+        st.cfg.accounts.default_access,
+        Some(note),
+    )))
+}
+
+pub async fn approve_account(
+    State(st): State<AppState>,
+    Admin(viewer): Admin,
+    Path(id): Path<i64>,
+    form: Fields,
+) -> Res {
+    let access = Access::parse(form.get("access"))
+        .ok_or_else(|| AppError::BadRequest("Choose child or adult.".into()))?;
+    let account = st
+        .db
+        .write(move |c| {
+            if !accounts::approve(c, id, access)? {
+                return Ok(None);
+            }
+            accounts::get(c, id)
+        })
+        .await?
+        .ok_or(AppError::NotFound)?;
+    tracing::info!(username = %account.username, access = access.as_str(), "account approved");
+    if viewer.htmx {
+        let note = format!(
+            "Approved {} with {} access. They can sign in now.",
+            account.username,
+            access.as_str()
+        );
+        return account_lists(&st, &note).await;
+    }
+    Ok(see_other("/admin/accounts?msg=approved"))
+}
+
+pub async fn reject_account(
+    State(st): State<AppState>,
+    Admin(viewer): Admin,
+    Path(id): Path<i64>,
+) -> Res {
+    let account = st
+        .db
+        .write(move |c| {
+            let Some(account) = accounts::get(c, id)? else {
+                return Ok(None);
+            };
+            Ok(accounts::reject(c, id)?.then_some(account))
+        })
+        .await?
+        .ok_or(AppError::NotFound)?;
+    tracing::info!(username = %account.username, "account request turned down");
+    if viewer.htmx {
+        let note = format!(
+            "Turned down {}'s request; the account was deleted.",
+            account.username
+        );
+        return account_lists(&st, &note).await;
+    }
+    Ok(see_other("/admin/accounts?msg=rejected"))
 }
 
 pub async fn set_access(

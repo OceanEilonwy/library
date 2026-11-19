@@ -1906,6 +1906,20 @@ select:focus-visible {
   color: var(--muted);
 }
 
+.waiting-notice {
+  display: grid;
+  gap: 4px;
+}
+
+.waiting-notice .small {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.account-requested h1:focus {
+  outline: none;
+}
+
 .back-to-site {
   color: var(--muted);
   font-size: 0.92rem;

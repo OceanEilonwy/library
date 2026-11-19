@@ -6,6 +6,8 @@
 
 export type Access = 'child' | 'adult';
 export type Account = { id: number; username: string; email: string; access: Access };
+/** The answer to registering: the account waits for a librarian to approve it (no session yet). */
+export type RegistrationPending = { status: 'pending'; message: string };
 
 export type MediaKind = 'audio' | 'video' | 'document';
 export type Subtitle = { id: number; language: string; label: string; url: string };
@@ -201,7 +203,7 @@ export function createApiClient(options: ApiClientOptions = {}) {
 
   return {
     register: (input: { username: string; email: string; password: string }) =>
-      request<Account>('POST', '/api/account/register', input, false),
+      request<RegistrationPending>('POST', '/api/account/register', input, false),
     login: (input: { login: string; password: string }) => request<Account>('POST', '/api/account/login', input, false),
     logout: () => request<void>('POST', '/api/account/logout', undefined, false),
     me: () => request<Account>('GET', '/api/account/me', undefined, false),

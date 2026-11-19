@@ -18,8 +18,9 @@ hyper, maud templates, htmx 4) with everything in a single SQLite file.
   proxy's basic auth; editing needs the admin password, remembered for the
   browser session.
 - **The Player**: digital copies of your CDs, DVDs and books (music, films,
-  PDFs) play in an installable web app at `/player/`, with simple accounts,
-  playlists, favourites and offline downloads. See [The Player](#the-player).
+  PDFs) play in an installable web app at `/player/`, with simple accounts
+  (each approved by the librarian), playlists, favourites and offline
+  downloads. See [The Player](#the-player).
 
 ## Running it
 
@@ -161,10 +162,11 @@ Then open:
 
 - <http://127.0.0.1:8090/player/>: the Player. Sign in as **adult** /
   **password123** (sees everything) or **kid** / **password123** (a child
-  account), or make a new account.
+  account), or ask for a new account (it waits for your approval).
 - <http://127.0.0.1:8090/>: the catalogue. **Unlock** with **librarian** for
   the Librarian's desk, the upload studio (an item's **Add or manage files**)
-  and **Player accounts**.
+  and **Player accounts**, where **newbie** (password **password123**) is
+  waiting for approval so you can try approving it.
 
 The seed makes, through the real upload endpoint: "Sine Songs" (three tones,
 FLAC/MP3/Opus), "Late Night Tones" (marked Restricted, so only adults see
@@ -197,22 +199,32 @@ the server log). `LIBRARY_BIN` points them at a server binary instead of
 
 ### Accounts
 
-Digital copies need an account; the catalogue doesn't. People make one in
-the Player (username, email, password). New accounts are **child**
-accounts: they never see an item marked **Restricted (adults only)**, not
-even in someone else's playlist. The librarian promotes people to
-**adult** on the Librarian's desk under **Player accounts** (`/admin/accounts`),
-where accounts can also be deleted. From the server:
+Digital copies need an account; the catalogue doesn't. People ask for one
+in the Player (username, email, password), and **a librarian approves every
+account before it can be used**: until then, signing in says the account is
+waiting. Requests appear at the top of **Player accounts** on the
+Librarian's desk (`/admin/accounts`; the desk's link shows how many are
+waiting) under **Waiting for approval**, where you **Approve** each one,
+choosing **Child** or **Adult** access as you do, or **Reject** it (which
+deletes it).
+
+**Child** accounts never see an item marked **Restricted (adults only)**,
+not even in someone else's playlist. The librarian can change an approved
+account between child and **adult** on the same page, where accounts can
+also be deleted. From the server:
 
 ```sh
 library --config /etc/library/library.toml create-account alice alice@example.org --adult
+library --config /etc/library/library.toml approve-account bob            # keeps the access bob asked with
+library --config /etc/library/library.toml approve-account carol --adult
 library --config /etc/library/library.toml set-access alice child
 ```
 
-`create-account` asks for the password (or reads `LIBRARY_ACCOUNT_PASSWORD`).
-In `library.toml`, `[accounts] default_access = "adult"` makes new accounts
-adults, and `open_registration = false` stops people making accounts in the
-Player.
+`create-account` makes an account that is approved straight away; it asks
+for the password (or reads `LIBRARY_ACCOUNT_PASSWORD`). In `library.toml`,
+`[accounts] default_access = "adult"` makes Adult the access new requests
+start with (and the choice pre-selected when approving), and
+`open_registration = false` stops people asking for accounts in the Player.
 
 Playlists are visible to every account, but each person only sees the
 entries they're allowed to play; a playlist with nothing left to show is

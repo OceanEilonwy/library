@@ -4,7 +4,7 @@
 // app still opens and plays downloads. A 401 from the API ends the session.
 
 import { createSignal } from 'solid-js';
-import { isApiError, type Account, type ApiClient } from '../api';
+import { isApiError, type Account, type ApiClient, type RegistrationPending } from '../api';
 
 export type SessionStatus = 'loading' | 'signed-in' | 'signed-out';
 
@@ -68,10 +68,9 @@ export function createSession(api: ApiClient, memory: AccountMemory) {
       return result;
     },
 
-    async register(username: string, email: string, password: string): Promise<Account> {
-      const result = await api.register({ username, email, password });
-      signedIn(result);
-      return result;
+    /** Asks for an account. It waits for a librarian, so this never signs in. */
+    async register(username: string, email: string, password: string): Promise<RegistrationPending> {
+      return api.register({ username, email, password });
     },
 
     async signOut(): Promise<void> {

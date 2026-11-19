@@ -447,6 +447,8 @@ pub struct DeskView<'a> {
     pub tagline: &'a str,
     pub places: &'a [(Location, i64)],
     pub types: &'a [(MediaType, Vec<FieldDef>)],
+    /// Player accounts waiting for approval.
+    pub accounts_waiting: i64,
     pub flash: Option<&'a str>,
 }
 
@@ -466,7 +468,15 @@ pub fn desk(ctx: &Ctx, v: &DeskView) -> Markup {
             div.row-actions.desk-actions {
                 a.btn.solid href="/admin/items/new" { "New entry" }
                 a.btn href="/admin/types/new?next=/admin" { "New type" }
-                a.btn href="/admin/accounts" { "Player accounts" }
+                a.btn href="/admin/accounts" {
+                    "Player accounts"
+                    @if v.accounts_waiting > 0 {
+                        span.count-badge title="Waiting for approval" {
+                            (v.accounts_waiting)
+                            span.visually-hidden { " waiting for approval" }
+                        }
+                    }
+                }
                 a.btn href="/player/" { "Open the Player" }
             }
             div.two-col {
@@ -536,8 +546,14 @@ pub fn desk(ctx: &Ctx, v: &DeskView) -> Markup {
 
 // ---------- Player accounts ----------
 
-/// The Player accounts page.
-pub fn accounts_page(ctx: &Ctx, accounts: &[Account], flash: Option<&str>) -> Markup {
+/// The Player accounts page: requests waiting for approval, then
+/// everyone already let in.
+pub fn accounts_page(
+    ctx: &Ctx,
+    accounts: &[Account],
+    default_access: Access,
+    flash: Option<&str>,
+) -> Markup {
     page(
         ctx,
         "Player accounts",
@@ -549,24 +565,83 @@ pub fn accounts_page(ctx: &Ctx, accounts: &[Account], flash: Option<&str>) -> Ma
                 a href="/player/" { "Player" }
                 ". Children never see items marked “Restricted (adults only)”."
             }
-            @if let Some(f) = flash { p.flash role="status" { (f) } }
             div.row-actions.desk-actions { a.btn href="/admin" { "← Librarian's desk" } }
-            @if accounts.is_empty() {
-                div.empty {
-                    p { "No accounts yet." }
-                    p.small.muted {
-                        "People can make one from the Player, or run "
-                        span.mono { "library create-account <name> <email> --adult" }
-                        " on the server."
-                    }
-                }
-            } @else {
-                ul.admin-list.accounts {
-                    @for a in accounts { (account_row(a, None)) }
-                }
-            }
+            (account_lists(accounts, default_access, flash))
         },
     )
+}
+
+/// The waiting and approved lists (swapped as one by htmx after approving
+/// or turning down a request).
+pub fn account_lists(accounts: &[Account], default_access: Access, note: Option<&str>) -> Markup {
+    let (approved, waiting): (Vec<&Account>, Vec<&Account>) =
+        accounts.iter().partition(|a| a.approved());
+    html! {
+        div #account-lists {
+            @if let Some(n) = note { p.flash role="status" { (n) } }
+            @if !waiting.is_empty() {
+                section.waiting aria-labelledby="waiting-title" {
+                    h2 #waiting-title .kicker {
+                        "Waiting for approval "
+                        span.count-badge { (waiting.len()) }
+                    }
+                    p.small.muted {
+                        "These people asked for an account in the Player. Approve them (choosing what they may see) "
+                        "or turn the request down."
+                    }
+                    ul.admin-list.accounts {
+                        @for a in &waiting { (waiting_row(a, default_access)) }
+                    }
+                }
+            }
+            section aria-labelledby="approved-title" {
+                @if !waiting.is_empty() { h2 #approved-title .kicker { "Accounts" } }
+                @if approved.is_empty() {
+                    div.empty {
+                        p { @if waiting.is_empty() { "No accounts yet." } @else { "No approved accounts yet." } }
+                        p.small.muted {
+                            "People can ask for one from the Player, or run "
+                            span.mono { "library create-account <name> <email> --adult" }
+                            " on the server."
+                        }
+                    }
+                } @else {
+                    ul.admin-list.accounts {
+                        @for a in &approved { (account_row(a, None)) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A request waiting for approval: approve with an access level, or turn it down.
+fn waiting_row(a: &Account, default_access: Access) -> Markup {
+    html! {
+        li #{ "waiting-" (a.id) } {
+            div.grow {
+                strong.serif { (a.username) }
+                span.small.muted { " · " (a.email) " · asked " (date_long(a.created_at)) }
+            }
+            form method="post" action={ "/admin/accounts/" (a.id) "/approve" }
+                hx-post={ "/admin/accounts/" (a.id) "/approve" }
+                hx-target="#account-lists" hx-swap="outerHTML" {
+                label.visually-hidden for={ "approve-access-" (a.id) } { "Access for " (a.username) }
+                select.u-select.access-select id={ "approve-access-" (a.id) } name="access" {
+                    @for level in [Access::Child, Access::Adult] {
+                        option value=(level.as_str()) selected[default_access == level] { (level.label()) }
+                    }
+                }
+                button.btn.small.solid type="submit" aria-label={ "Approve " (a.username) } { "Approve" }
+            }
+            form method="post" action={ "/admin/accounts/" (a.id) "/reject" }
+                hx-post={ "/admin/accounts/" (a.id) "/reject" }
+                hx-confirm={ "Turn down " (a.username) "'s request? Their account will be deleted." }
+                hx-target="#account-lists" hx-swap="outerHTML" {
+                button.link-btn.small type="submit" aria-label={ "Reject " (a.username) } { "Reject" }
+            }
+        }
+    }
 }
 
 /// One account, with its access select and delete button.

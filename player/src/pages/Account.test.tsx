@@ -39,6 +39,20 @@ describe('sign in', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent("That username or password doesn't match.");
   });
 
+  test('explains that an account is waiting for approval', async () => {
+    const services = setup(() =>
+      jsonResponse(403, { error: 'Your account is waiting for a librarian to approve it.' }),
+    );
+    await userEvent.type(screen.getByLabelText('Username or email'), 'newbie');
+    await userEvent.type(screen.getByLabelText('Password'), 'password123');
+    await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    const notice = await screen.findByRole('alert');
+    expect(notice).toHaveTextContent('Not approved yet');
+    expect(notice).toHaveTextContent('Your account is waiting for a librarian to approve it.');
+    expect(notice).not.toHaveTextContent("doesn't match");
+    expect(services.session.status()).not.toBe('signed-in');
+  });
+
   test('asks for both fields before sending anything', async () => {
     const services = setup(() => jsonResponse(500));
     await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -92,14 +106,30 @@ describe('registration', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Ask the librarian');
   });
 
-  test('registers and signs in', async () => {
-    const services = setup(() => jsonResponse(201, { ...alice, access: 'child' }));
+  test('asks for an account and waits for a librarian, without signing in', async () => {
+    const services = setup((url) =>
+      url === '/api/account/register'
+        ? jsonResponse(202, {
+            status: 'pending',
+            message: 'Thanks! A librarian needs to approve your account before you can sign in.',
+          })
+        : jsonResponse(404),
+    );
+    await services.session.start();
     await userEvent.click(screen.getByRole('button', { name: 'Make an account' }));
     await userEvent.type(screen.getByLabelText('Username'), 'alice');
     await userEvent.type(screen.getByLabelText('Email'), 'alice@example.org');
     await userEvent.type(screen.getByLabelText('Password'), 'long enough');
     await userEvent.click(screen.getByRole('button', { name: 'Make account' }));
-    await vi.waitFor(() => expect(services.session.status()).toBe('signed-in'));
+    expect(await screen.findByRole('heading', { name: 'Account requested' })).toBeInTheDocument();
+    expect(screen.getByText('A librarian needs to approve it before you can sign in.')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Thanks!');
+    expect(services.session.status()).toBe('signed-out');
+    expect(services.session.account()).toBeNull();
+
+    // Back to the sign-in form.
+    await userEvent.click(screen.getByRole('button', { name: 'Back to sign in' }));
+    expect(screen.getByRole('heading', { name: 'Sign in' })).toBeInTheDocument();
   });
 });
 

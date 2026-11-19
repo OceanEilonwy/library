@@ -8,8 +8,8 @@ and playlists, so the Player has something to play.
 It WIPES the config's data_dir first (it refuses a folder called "data",
 which is where real catalogues live), then:
 
-  * makes two Player accounts with the CLI: adult / password123 (adult) and
-    kid / password123 (child);
+  * makes two Player accounts with the CLI (so they are approved):
+    adult / password123 (adult) and kid / password123 (child);
   * starts the server on a spare port, unlocks editing with the admin
     password ("librarian"), and adds four items with generated files,
     uploading each file through the real upload studio endpoint:
@@ -19,6 +19,9 @@ which is where real catalogues live), then:
       - "A Tiny Book" (a one-page PDF)
   * makes playlists through the JSON API, including ones that mix in or
     consist only of restricted tracks, and a few favourites;
+  * asks for one more account from the Player's registration endpoint,
+    newbie / password123, left waiting for approval so you can try
+    approving it on the Librarian's desk (Player accounts);
   * stops the server again.
 
 Sample files are made with ffmpeg when it is installed; otherwise with the
@@ -414,6 +417,7 @@ def main() -> None:
     print(f"    cargo run -- --config {shown} serve")
     print(f"  then open http://{listen}/player/  (adult / {ACCOUNT_PASSWORD}, kid / {ACCOUNT_PASSWORD})")
     print(f"  and http://{listen}/ (unlock editing with the admin password \"{ADMIN_PASSWORD}\").")
+    print(f"  newbie / {ACCOUNT_PASSWORD} is waiting for approval: approve it under Librarian's desk → Player accounts.")
 
 
 def seed(binary: Path, config: Path, base: str, data_dir: Path, tmp: Path) -> None:
@@ -474,6 +478,12 @@ def seed(binary: Path, config: Path, base: str, data_dir: Path, tmp: Path) -> No
     create_playlist(kid, "Kid's picks", [songs[1], late_tracks[1], book_pdf])
     run_cli(binary, config, "set-access", "kid", "child")
     kid.json("PUT", f"/api/favourites/{songs[1]}")
+
+    say("asking for the account newbie (left waiting for a librarian's approval)")
+    pending = Client(base).json("POST", "/api/account/register",
+                                {"username": "newbie", "email": "newbie@example.org", "password": ACCOUNT_PASSWORD})
+    if not pending or pending.get("status") != "pending":
+        fail(f"registering newbie answered {pending!r} instead of a pending account")
 
     summary = {
         "items": {"sineSongs": album, "lateNightTones": late, "film": film_item, "book": book},

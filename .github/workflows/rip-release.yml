@@ -45,7 +45,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: version
         env:
           REF_NAME: ${{ github.ref_name }}
@@ -69,7 +69,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install system libraries
         run: |
@@ -130,7 +130,7 @@ jobs:
             --output appimage
           mv "library-rip-$VERSION-linux-x86_64.AppImage" dist/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: linux
           path: dist/*
@@ -142,12 +142,12 @@ jobs:
     runs-on: windows-2022
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      CARGO_HOME: ${{ github.workspace }}/../cargo-home
+      CARGO_HOME: ${{ github.workspace }}/.cargo-home
     defaults:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # MSYS2's UCRT64 environment has libcdio, libcdio-paranoia, FLAC,
       # pkg-config and a Rust toolchain for the GNU target, all built
@@ -164,11 +164,11 @@ jobs:
             mingw-w64-ucrt-x86_64-libcdio-paranoia
             mingw-w64-ucrt-x86_64-flac
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
-            ${{ github.workspace }}/../cargo-home/registry
-            ${{ github.workspace }}/../cargo-home/git
+            ${{ github.workspace }}/.cargo-home/registry
+            ${{ github.workspace }}/.cargo-home/git
             rip/target
           key: rip-release-windows-${{ hashFiles('rip/Cargo.lock') }}
           restore-keys: rip-release-windows-
@@ -197,7 +197,7 @@ jobs:
           (cd dist && zip -r -9 "$name.zip" "$name")
           rm -rf "dist/$name"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: windows
           path: dist/*
@@ -210,17 +210,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Homebrew's bottles need at least the macOS they were built
+          # for, so the oldest runner of each architecture gives the widest
+          # reach.
           - arch: arm64
-            runner: macos-15
+            runner: macos-14
           - arch: x86_64
             runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
       ARCH: ${{ matrix.arch }}
-      MACOSX_DEPLOYMENT_TARGET: "12.0"
+      # The Homebrew bottles bundled with the app are built for macOS 14.
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install libraries
         run: brew install pkg-config libcdio libcdio-paranoia flac dylibbundler
@@ -303,7 +307,7 @@ jobs:
           mkdir dist
           mv "$name.dmg" "$name.zip" dist/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: macos-${{ matrix.arch }}
           path: dist/*
@@ -316,7 +320,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: artifacts
           merge-multiple: true
@@ -327,7 +331,7 @@ jobs:
           sha256sum library-rip-* > SHA256SUMS
           cat SHA256SUMS
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: library-rip-${{ needs.version.outputs.version }}
           path: artifacts/*
@@ -342,7 +346,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: library-rip-${{ needs.version.outputs.version }}
           path: artifacts
@@ -351,7 +355,7 @@ jobs:
         working-directory: artifacts
         run: sha256sum --check SHA256SUMS
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           name: Library Rip ${{ needs.version.outputs.version }}
           body: |

@@ -3,6 +3,9 @@
 //! release builds) also `--fake-disc`, `headless`, `make-fake-disc` and
 //! `mock-services`.
 
+// Release builds on Windows are GUI programs: no console window opens.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 #[cfg(feature = "testsupport")]
 use std::path::PathBuf;
 use std::process::ExitCode;

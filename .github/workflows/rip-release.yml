@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Library Rip release builds, started by pushing a tag such as `rip-v0.1.0`.
 #
+# A dry run builds and packages everything but publishes nothing: push a
+# branch named `ci/rip-release-<anything>`, or run the workflow by hand
+# (workflow_dispatch, from the default branch). The packages and SHA256SUMS
+# are then only the run's `library-rip-<version>` artifact.
+#
 # Produces, for the GitHub release (with SHA256SUMS):
 #   library-rip-<version>-linux-x86_64.tar.gz    binary + licences
 #   library-rip-<version>-linux-x86_64.AppImage  self-contained (linuxdeploy)
@@ -20,10 +25,15 @@ name: Library Rip release
 on:
   push:
     tags: ["rip-v*"]
+    branches: ["ci/rip-release-*"]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: rip-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -132,6 +142,7 @@ jobs:
     runs-on: windows-2022
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      CARGO_HOME: ${{ github.workspace }}/../cargo-home
     defaults:
       run:
         shell: msys2 {0}
@@ -152,6 +163,15 @@ jobs:
             mingw-w64-ucrt-x86_64-libcdio
             mingw-w64-ucrt-x86_64-libcdio-paranoia
             mingw-w64-ucrt-x86_64-flac
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/../cargo-home/registry
+            ${{ github.workspace }}/../cargo-home/git
+            rip/target
+          key: rip-release-windows-${{ hashFiles('rip/Cargo.lock') }}
+          restore-keys: rip-release-windows-
 
       - name: Build
         working-directory: rip
@@ -269,7 +289,15 @@ jobs:
         run: |
           name="library-rip-$VERSION-macos-$ARCH"
           cp LICENSE dist/
-          hdiutil create -volname "Library Rip" -srcfolder dist -ov -format UDZO "$name.dmg"
+          ln -s /Applications dist/Applications
+          # hdiutil sometimes fails with "Resource busy" on CI; try again.
+          for attempt in 1 2 3; do
+            if hdiutil create -volname "Library Rip" -srcfolder dist -ov -format UDZO "$name.dmg"; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep 10
+          done
           (cd dist && ditto -c -k --keepParent "Library Rip.app" "../$name.zip")
           rm -rf dist
           mkdir dist
@@ -281,13 +309,10 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  release:
-    name: Publish the release
+  checksums:
+    name: Collect the packages and SHA256SUMS
     needs: [version, linux, windows, macos]
-    if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
@@ -301,6 +326,30 @@ jobs:
         run: |
           sha256sum library-rip-* > SHA256SUMS
           cat SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: library-rip-${{ needs.version.outputs.version }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  # Only for `rip-v*` tags: dry runs stop at the artifact above.
+  release:
+    name: Publish the release
+    needs: [version, checksums]
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'rip-v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: library-rip-${{ needs.version.outputs.version }}
+          path: artifacts
+
+      - name: Check SHA256SUMS
+        working-directory: artifacts
+        run: sha256sum --check SHA256SUMS
 
       - uses: softprops/action-gh-release@v2
         with:

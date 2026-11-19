@@ -155,8 +155,18 @@ Pushing a tag `rip-vX.Y.Z` (matching `version` in `Cargo.toml`) runs
 `.github/workflows/rip-release.yml`: Linux tar.gz and AppImage, a Windows
 zip (MSYS2 UCRT64 build with its DLLs), macOS dmg and zip per architecture,
 and `SHA256SUMS`, attached to a GitHub release. Copy them into the library's
-`<data_dir>/downloads/library-rip/`. Pull requests touching `rip/` run
-`.github/workflows/rip-ci.yml` (fmt, clippy, tests on Linux).
+`<data_dir>/downloads/library-rip/`. Nothing is signed or notarised yet.
+
+To try the packaging without publishing anything, push a branch named
+`ci/rip-release-<anything>` (or run the workflow by hand from `main`): the
+same builds run, and the packages plus `SHA256SUMS` are left as the run's
+`library-rip-<version>` artifact (`gh run download <run-id>`). Only a
+`rip-v*` tag publishes a release.
+
+Pull requests touching `rip/` (and pushes to `main` or `ci/rip-*`
+branches) run `.github/workflows/rip-ci.yml`: fmt, clippy and all tests on
+Linux, including the end-to-end test against the real server; clippy and
+the tests except the end-to-end one on Windows (MSYS2 UCRT64) and macOS.
 
 ## System dependencies
 

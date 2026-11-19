@@ -72,6 +72,10 @@ enum Command {
         /// unreadable, jitter or flaky_once (repeat for several).
         #[arg(long = "error", value_name = "LBA:KIND", value_parser = parse_injected_error)]
         errors: Vec<library_rip::fakedisc::InjectedError>,
+        /// Make an enhanced CD (CD-Extra): the audio, the 11,400-sector gap
+        /// between sessions and a data track in session 2.
+        #[arg(long)]
+        enhanced: bool,
     },
     /// Serve stand-in MusicBrainz, Cover Art Archive, AccurateRip and
     /// CUETools database answers for a simulated disc (no network needed).
@@ -84,6 +88,12 @@ enum Command {
         /// Address to listen on.
         #[arg(long, default_value = "127.0.0.1:0", value_name = "ADDRESS")]
         listen: std::net::SocketAddr,
+        /// A pressing the AccurateRip and CTDB stand-ins know, as
+        /// OFFSET[:CONFIDENCE] (offset in samples; repeat for several).
+        /// Default: only the disc's own pressing, 0:12. Use e.g.
+        /// `--pressing 102` to know only a pressing 102 samples later.
+        #[arg(long = "pressing", value_name = "OFFSET[:CONFIDENCE]", allow_hyphen_values = true, value_parser = parse_pressing)]
+        pressings: Vec<library_rip::mockservices::MockPressing>,
     },
 }
 
@@ -170,10 +180,14 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             seconds,
             offset,
             errors,
-        }) => make_fake_disc(dir, tracks, seconds, offset, errors).map(|()| ExitCode::SUCCESS),
-        Some(Command::MockServices { dir, listen }) => {
-            mock_services(dir, listen).map(|()| ExitCode::SUCCESS)
-        }
+            enhanced,
+        }) => make_fake_disc(dir, tracks, seconds, offset, errors, enhanced)
+            .map(|()| ExitCode::SUCCESS),
+        Some(Command::MockServices {
+            dir,
+            listen,
+            pressings,
+        }) => mock_services(dir, listen, pressings).map(|()| ExitCode::SUCCESS),
     }
 }
 
@@ -259,6 +273,7 @@ fn make_fake_disc(
     seconds: u32,
     offset: i32,
     errors: Vec<library_rip::fakedisc::InjectedError>,
+    enhanced: bool,
 ) -> anyhow::Result<()> {
     use library_rip::testsupport::{FakeDiscOptions, make_fake_disc};
     let options = FakeDiscOptions {
@@ -266,12 +281,19 @@ fn make_fake_disc(
         seconds,
         read_offset: SampleOffset(offset),
         errors,
+        enhanced,
     };
     let disc = make_fake_disc(&dir, &options)
         .with_context(|| format!("could not make a simulated disc in {}", dir.display()))?;
+    let data = disc.spec.toc.data_tracks().count();
     println!(
-        "Made a simulated disc with {} tracks in {}",
-        disc.spec.toc.tracks().len(),
+        "Made a simulated disc with {} audio tracks{} in {}",
+        disc.spec.toc.audio_tracks().count(),
+        if data > 0 {
+            " and a data track in a second session (an enhanced CD)"
+        } else {
+            ""
+        },
         dir.display()
     );
     Ok(())
@@ -279,14 +301,22 @@ fn make_fake_disc(
 
 /// Serves the mock services until Ctrl-C.
 #[cfg(feature = "testsupport")]
-fn mock_services(dir: PathBuf, listen: std::net::SocketAddr) -> anyhow::Result<()> {
+fn mock_services(
+    dir: PathBuf,
+    listen: std::net::SocketAddr,
+    pressings: Vec<library_rip::mockservices::MockPressing>,
+) -> anyhow::Result<()> {
+    let mut options = library_rip::mockservices::MockOptions::default();
+    if !pressings.is_empty() {
+        options.pressings = pressings;
+    }
     use std::io::Write as _;
     let runtime = tokio::runtime::Runtime::new().context("could not start the runtime")?;
     runtime.block_on(async {
         let listener = tokio::net::TcpListener::bind(listen)
             .await
             .with_context(|| format!("could not listen on {listen}"))?;
-        let mock = library_rip::mockservices::start(&dir, listener)
+        let mock = library_rip::mockservices::start_with(&dir, listener, &options)
             .await
             .with_context(|| format!("could not serve the disc in {}", dir.display()))?;
         println!("# Mock services for {} at {}", dir.display(), mock.base);
@@ -301,6 +331,27 @@ fn mock_services(dir: PathBuf, listen: std::net::SocketAddr) -> anyhow::Result<(
         }
         anyhow::Ok(())
     })
+}
+
+/// Parses `--pressing 102` or `--pressing -48:5`.
+#[cfg(feature = "testsupport")]
+fn parse_pressing(text: &str) -> Result<library_rip::mockservices::MockPressing, String> {
+    let (offset, confidence) = match text.split_once(':') {
+        Some((offset, confidence)) => (offset, Some(confidence)),
+        None => (text, None),
+    };
+    let offset: i32 = offset
+        .trim()
+        .parse()
+        .map_err(|_| format!("{offset:?} is not a number of samples"))?;
+    let confidence = match confidence {
+        Some(text) => text
+            .trim()
+            .parse()
+            .map_err(|_| format!("{text:?} is not a confidence (1 to 255)"))?,
+        None => library_rip::mockservices::ACCURATERIP_CONFIDENCE,
+    };
+    Ok(library_rip::mockservices::MockPressing { offset, confidence })
 }
 
 /// Parses `--error 700:jitter`.
@@ -348,6 +399,16 @@ mod tests {
         assert!(parse_injected_error("12").is_err());
         assert!(parse_injected_error("x:jitter").is_err());
         assert!(parse_injected_error("12:scratched").is_err());
+    }
+
+    #[test]
+    fn pressings_parse() {
+        let plain = parse_pressing("102").unwrap();
+        assert_eq!((plain.offset, plain.confidence), (102, 12));
+        let earlier = parse_pressing("-48:5").unwrap();
+        assert_eq!((earlier.offset, earlier.confidence), (-48, 5));
+        assert!(parse_pressing("x").is_err());
+        assert!(parse_pressing("3:999").is_err());
     }
 
     #[test]

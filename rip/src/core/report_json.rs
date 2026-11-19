@@ -3,13 +3,22 @@
 //!
 //! The file is the [`RipReport`] (camelCase keys, in field order) with two
 //! extra keys first: `"format": "library-rip/rip-report"` and
-//! `"formatVersion": 1`. The version goes up only when a reader of the old
+//! `"formatVersion": 2`. The version goes up only when a reader of the old
 //! format would misread the new one; adding fields does not change it.
+//!
+//! - **Version 1:** the first format.
+//! - **Version 2:** an accurate track may have matched *another pressing*
+//!   (`accuraterip.pressingOffset`, likewise `ctdb.pressingOffset`), which a
+//!   version 1 reader would take for a match with this pressing; the disc
+//!   `verdict`; and TOC entries carry their `session`, with an enhanced
+//!   CD's last audio track ending at the audio session's end instead of at
+//!   the data track. Version 1 files still parse: the missing fields read
+//!   as `+0` and session 1, and the verdict is worked out from the tracks.
 
 use serde::{Deserialize, Serialize};
 
 use super::{CoreError, Result};
-use crate::model::RipReport;
+use crate::model::{DiscVerdict, RipReport};
 
 /// File name used for the report.
 pub const FILE_NAME: &str = "rip.json";
@@ -18,7 +27,7 @@ pub const FILE_NAME: &str = "rip.json";
 pub const FORMAT: &str = "library-rip/rip-report";
 
 /// The current `formatVersion`.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,7 +74,11 @@ pub fn parse(text: &str) -> Result<RipReport> {
             envelope.format_version
         )));
     }
-    Ok(envelope.report)
+    let mut report = envelope.report;
+    if envelope.format_version < 2 {
+        report.verdict = DiscVerdict::from_results(&report.tracks, &report.ctdb);
+    }
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -77,7 +90,7 @@ mod tests {
     fn round_trips_and_is_versioned() {
         let report = sample_report();
         let text = render(&report).unwrap();
-        assert!(text.starts_with("{\n  \"format\": \"library-rip/rip-report\",\n  \"formatVersion\": 1,\n  \"appVersion\""));
+        assert!(text.starts_with("{\n  \"format\": \"library-rip/rip-report\",\n  \"formatVersion\": 2,\n  \"appVersion\""));
         assert!(text.ends_with("}\n"));
         assert_eq!(parse(&text).unwrap(), report);
         // Deterministic.
@@ -87,11 +100,41 @@ mod tests {
     #[test]
     fn refuses_other_formats_and_newer_versions() {
         let text = render(&sample_report()).unwrap();
-        let newer = text.replace("\"formatVersion\": 1", "\"formatVersion\": 2");
+        let newer = text.replace("\"formatVersion\": 2", "\"formatVersion\": 3");
         assert!(matches!(parse(&newer), Err(CoreError::Invalid(_))));
         let other = text.replace("library-rip/rip-report", "something-else");
         assert!(matches!(parse(&other), Err(CoreError::Invalid(_))));
         assert!(parse("{}").is_err());
+    }
+
+    #[test]
+    fn version_one_reports_still_parse() {
+        // A version 1 report: no sessions, no pressing offsets, no verdict.
+        let report = sample_report();
+        let mut value: serde_json::Value = serde_json::from_str(&render(&report).unwrap()).unwrap();
+        value["formatVersion"] = 1.into();
+        let object = value.as_object_mut().unwrap();
+        object.remove("verdict");
+        for track in object["toc"]["tracks"].as_array_mut().unwrap() {
+            track.as_object_mut().unwrap().remove("session");
+        }
+        for track in object["tracks"].as_array_mut().unwrap() {
+            track["accuraterip"]
+                .as_object_mut()
+                .unwrap()
+                .remove("pressingOffset");
+        }
+        object["ctdb"]
+            .as_object_mut()
+            .unwrap()
+            .remove("pressingOffset");
+        let old = serde_json::to_string(&value).unwrap();
+        assert!(!old.contains("pressingOffset") && !old.contains("session"));
+        let parsed = parse(&old).unwrap();
+        assert_eq!(
+            parsed, report,
+            "missing fields read as +0, session 1, verdict worked out"
+        );
     }
 
     #[test]
@@ -104,6 +147,9 @@ mod tests {
             "\"copyCrc\"",
             "\"accurateripCrcs\"",
             "\"unrecoveredSectors\"",
+            "\"pressingOffset\"",
+            "\"verdict\"",
+            "\"session\"",
         ] {
             assert!(text.contains(key), "missing {key}");
         }

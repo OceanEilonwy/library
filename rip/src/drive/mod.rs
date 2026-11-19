@@ -31,6 +31,12 @@ pub enum DriveError {
     /// The disc has no audio tracks.
     #[error("this disc has no audio tracks")]
     NoAudio,
+    /// A mixed-mode disc: a data track before (or among) the audio tracks.
+    /// Its audio is not ripped: reading the first audio track's edge would
+    /// mean reading the data track as audio, and the databases' rules for
+    /// such discs are not settled.
+    #[error("this is a mixed-mode CD (its first track is computer data), which cannot be ripped")]
+    MixedMode,
     /// The drive could not be opened (missing, busy, no permission).
     #[error("could not open the drive {device}: {reason}")]
     Open {

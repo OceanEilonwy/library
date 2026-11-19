@@ -14,6 +14,10 @@
 //!     cycle (`+4, 0, -3, 0` samples), so only some reads are right;
 //!   - `flaky_once`: the very first read of the sector is garbage, every
 //!     later one is right.
+//! - **Not audio.** On an enhanced disc, sectors in the gap between the
+//!   sessions and in data tracks cannot be read as audio: asking for any of
+//!   them fails the whole read, as a real drive does (and the attempt is
+//!   counted, so tests can prove the reader never tries).
 //! - **Simulated paranoia** ([`ParanoiaMode::Full`]) reads each sector until
 //!   the same data has come back twice, up to [`PARANOIA_ATTEMPTS`] reads.
 //!   Jitter and flaky sectors are recovered (and counted as retried);
@@ -64,6 +68,8 @@ pub struct FakeDrive {
     reads: HashMap<Lba, u32>,
     /// Raw reads made in total (every sector), for tests.
     raw_reads: u64,
+    /// Reads that asked for sectors that are not audio.
+    refused_reads: u64,
 }
 
 impl FakeDrive {
@@ -98,6 +104,7 @@ impl FakeDrive {
             errors,
             reads: HashMap::new(),
             raw_reads: 0,
+            refused_reads: 0,
         })
     }
 
@@ -115,6 +122,36 @@ impl FakeDrive {
     /// (simulated paranoia makes at least two per sector).
     pub fn raw_reads(&self) -> u64 {
         self.raw_reads
+    }
+
+    /// How many reads asked for sectors that are not audio (the gap between
+    /// sessions or a data track) and were refused.
+    pub fn refused_reads(&self) -> u64 {
+        self.refused_reads
+    }
+
+    /// Why `lba` cannot be read as audio, if it cannot: it is in a data
+    /// track or between tracks (the gap between sessions). Sectors before
+    /// the first track (its pre-gap) are readable.
+    fn not_audio(&self, lba: Lba) -> Option<String> {
+        let toc = &self.disc.spec.toc;
+        if toc.first_track().is_some_and(|t| lba < t.start_lba) {
+            return None;
+        }
+        match toc
+            .tracks()
+            .iter()
+            .find(|t| lba >= t.start_lba && t.end_lba().is_some_and(|end| lba < end))
+        {
+            Some(track) if track.is_audio => None,
+            Some(track) => Some(format!(
+                "sector {lba} is in data track {}, which cannot be read as audio",
+                track.number
+            )),
+            None => Some(format!(
+                "sector {lba} is in the gap between sessions, which cannot be read"
+            )),
+        }
     }
 
     /// Bytes `[start, start + length)` of the disc as a zero-offset drive
@@ -246,6 +283,13 @@ impl DiscDrive for FakeDrive {
                 ),
             });
         };
+        if let Some((lba, reason)) = (start.0..end.0)
+            .map(Lba)
+            .find_map(|lba| self.not_audio(lba).map(|reason| (lba, reason)))
+        {
+            self.refused_reads = self.refused_reads.saturating_add(1);
+            return Err(DriveError::Read { lba, reason });
+        }
         let capacity = usize::try_from(count.bytes()).unwrap_or(0);
         let mut read = SectorRead {
             data: Vec::with_capacity(capacity),
@@ -311,12 +355,21 @@ mod tests {
     use crate::testsupport::{FakeDiscOptions, make_fake_disc};
 
     fn disc(errors: Vec<InjectedError>, offset: i32) -> (tempfile::TempDir, FakeDrive) {
+        disc_of(errors, offset, false)
+    }
+
+    fn disc_of(
+        errors: Vec<InjectedError>,
+        offset: i32,
+        enhanced: bool,
+    ) -> (tempfile::TempDir, FakeDrive) {
         let dir = tempfile::tempdir().unwrap();
         let options = FakeDiscOptions {
             tracks: 2,
             seconds: 1,
             read_offset: SampleOffset(offset),
             errors,
+            enhanced,
         };
         make_fake_disc(dir.path(), &options).unwrap();
         let drive = FakeDrive::open(dir.path()).unwrap();
@@ -379,6 +432,36 @@ mod tests {
             drive.read_sectors(Lba(149), Sectors(2), ParanoiaMode::Full),
             Err(DriveError::Read { .. })
         ));
+    }
+
+    #[test]
+    fn the_session_gap_and_data_track_cannot_be_read() {
+        let (_dir, mut drive) = disc_of(Vec::new(), 0, true);
+        // The audio reads (up to sector 150, the end of the audio session).
+        let audio = drive
+            .read_sectors(Lba(140), Sectors(10), ParanoiaMode::Full)
+            .unwrap();
+        assert_eq!(audio.data.len(), 10 * 2352);
+        assert_eq!(drive.refused_reads(), 0);
+        for (start, count) in [(149, 2), (150, 1), (5_000, 3), (11_550, 1), (12_000, 10)] {
+            for mode in [ParanoiaMode::Full, ParanoiaMode::Off] {
+                let error = drive
+                    .read_sectors(Lba(start), Sectors(count), mode)
+                    .unwrap_err();
+                assert!(matches!(error, DriveError::Read { .. }), "{error}");
+            }
+        }
+        let message = drive
+            .read_sectors(Lba(11_550), Sectors(1), ParanoiaMode::Full)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("data track 03"), "{message}");
+        let message = drive
+            .read_sectors(Lba(150), Sectors(1), ParanoiaMode::Full)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("gap between sessions"), "{message}");
+        assert_eq!(drive.refused_reads(), 12);
     }
 
     #[test]

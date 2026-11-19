@@ -29,17 +29,17 @@ use super::settings::Settings;
 use super::{AppError, Result};
 use crate::core::accuraterip::{self, DatabaseEntry, TrackCrcState, TrackPosition};
 use crate::core::ctdb::{self, CtdbEntry};
-use crate::core::{CoreError, cue, discid, log, offset, report_json};
+use crate::core::{CoreError, cue, discid, log, offset, pressing, report_json};
 use crate::drive::reader::{ReadOptions, ReadProgress, read_track};
 use crate::drive::{DiscDrive, DriveError};
 use crate::encode::{FlacMetadata, encode_flac, sha256_file, tags};
 use crate::library::LibraryClient;
 use crate::library::client::UploadProgress;
 use crate::model::{
-    AccurateRipCrcs, AccurateRipStatus, CtdbStatus, DiscIds, DiscInfo, DriveIdentity, ItemTarget,
-    MediaKind, OffsetSource, Pcm, ReleaseMetadata, RipReport, SampleOffset, Sectors, Sha256Digest,
-    Toc, TrackEntry, TrackMetadata, TrackNumber, TrackReadResult, TrackReport, UploadFile,
-    UploadPlan,
+    AccurateRipCrcs, AccurateRipStatus, CtdbStatus, DiscIds, DiscInfo, DiscLayout, DiscVerdict,
+    DriveIdentity, ItemTarget, MediaKind, OffsetSource, Pcm, ReleaseMetadata, RipReport,
+    SampleOffset, Samples, Sectors, Sha256Digest, Toc, TrackEntry, TrackMetadata, TrackNumber,
+    TrackReadResult, TrackReport, UploadFile, UploadPlan,
 };
 use crate::musicbrainz::{self, MusicBrainzClient};
 
@@ -303,9 +303,12 @@ pub async fn rip(
     let pcm_dir = work_dir.join(".pcm");
     std::fs::create_dir_all(&pcm_dir).map_err(|e| AppError::io(&pcm_dir, e))?;
     let (sender, receiver) = mpsc::unbounded_channel();
+    // Never past the audio: on an enhanced CD the audio session ends well
+    // before the data track, and the gap between them cannot be read.
+    let audio_end = disc.toc.audio_end().ok_or(DriveError::NoAudio)?;
     let job = ReadJob {
         tracks: audio.clone(),
-        lead_out: Sectors(disc.toc.lead_out().0),
+        audio_end: Sectors(audio_end.0),
         options: ReadOptions {
             mode: settings.read_mode,
             offset: read_offset,
@@ -340,13 +343,28 @@ pub async fn rip(
         fetched.map_err(|error| AppError::Task(error.to_string()))?;
     check(&cancel)?;
 
-    // 4. Verify.
+    // 4. Verify: at our own position, then other pressings.
     let crcs = {
         let reads = reads.clone();
         blocking(move || accuraterip_crcs(&reads)).await??
     };
-    let accuraterip_statuses = match &accuraterip_entries {
-        Ok(entries) => accuraterip::verify(&crcs, entries),
+    let pressing_search = settings.pressing_search();
+    let accuraterip_statuses = match accuraterip_entries {
+        Ok(entries) => {
+            let here = accuraterip::verify(&crcs, &entries);
+            let reads = reads.clone();
+            blocking(move || -> Result<_> {
+                let audio = audio_of(&reads);
+                let mut audio = pressing::DiscAudio::new(&audio)?;
+                Ok(pressing::verify_with_pressings(
+                    &mut audio,
+                    here,
+                    &entries,
+                    pressing_search,
+                )?)
+            })
+            .await??
+        }
         Err(reason) => crcs
             .iter()
             .map(|(number, _)| {
@@ -359,10 +377,11 @@ pub async fn rip(
             })
             .collect(),
     };
+    check(&cancel)?;
     let ctdb_status = {
         let reads = reads.clone();
         let toc = disc.toc.clone();
-        blocking(move || ctdb_status(&reads, &toc, ctdb_entries)).await??
+        blocking(move || ctdb_status(&reads, &toc, ctdb_entries, pressing_search)).await??
     };
     events(PipelineEvent::Verified {
         tracks: accuraterip_statuses.clone(),
@@ -430,6 +449,7 @@ pub async fn rip(
         disc_ids,
         mcn: disc.mcn.clone(),
         release: release.clone(),
+        verdict: DiscVerdict::from_results(&track_reports, &ctdb_status),
         tracks: track_reports,
         ctdb: ctdb_status,
     };
@@ -572,7 +592,8 @@ pub fn item_page_url(base: &Url, id: i64) -> String {
 
 struct ReadJob {
     tracks: Vec<TrackEntry>,
-    lead_out: Sectors,
+    /// Where the readable audio ends (see [`crate::model::Toc::audio_end`]).
+    audio_end: Sectors,
     options: ReadOptions,
     pcm_dir: PathBuf,
 }
@@ -616,7 +637,7 @@ fn read_all(
         let result = read_track(
             &mut *drive,
             track,
-            job.lead_out,
+            job.audio_end,
             &job.options,
             &path,
             &mut on_progress,
@@ -712,6 +733,7 @@ fn unavailable_reason(error: &CoreError) -> String {
         CoreError::Invalid(_) | CoreError::Json(_) => {
             "the database sent something unexpected".to_owned()
         }
+        CoreError::Io { .. } => "the ripped audio could not be read back".to_owned(),
     }
 }
 
@@ -775,11 +797,13 @@ fn stream_file(path: &Path, mut consume: impl FnMut(&[u8]) -> Result<()>) -> Res
 }
 
 /// The CTDB whole-disc CRC, streamed track by track from the files (no
-/// whole-disc buffer), worked out only when the database has entries.
+/// whole-disc buffer), worked out only when the database has entries; on a
+/// mismatch, other pressings are searched within `pressing_search` samples.
 fn ctdb_status(
     reads: &[TrackReadResult],
     toc: &Toc,
     entries: Fetched<CtdbEntry>,
+    pressing_search: u32,
 ) -> Result<CtdbStatus> {
     let entries = match entries {
         Err(reason) => return Ok(CtdbStatus::Unavailable { reason }),
@@ -807,7 +831,20 @@ fn ctdb_status(
             }
         }
     }
-    Ok(ctdb::verify(state.finish()?, &entries))
+    let here = ctdb::verify(state.finish()?, &entries);
+    let audio = audio_of(reads);
+    let mut audio = pressing::DiscAudio::new(&audio)?;
+    Ok(pressing::ctdb_with_pressings(
+        &mut audio,
+        here,
+        &entries,
+        pressing_search,
+    )?)
+}
+
+/// Each read track's PCM and length, for [`pressing::DiscAudio`].
+fn audio_of(reads: &[TrackReadResult]) -> Vec<(&Pcm, Samples)> {
+    reads.iter().map(|read| (&read.pcm, read.samples)).collect()
 }
 
 fn verification_for(
@@ -871,6 +908,20 @@ pub fn verification_notes(report: &RipReport) -> Vec<String> {
         .collect();
     if matches!(report.ctdb, CtdbStatus::Mismatch { .. }) {
         notes.push("The CUETools database has other checksums for this disc.".to_owned());
+    }
+    if let DiscVerdict::Accurate {
+        other_pressing_offsets,
+    } = &report.verdict
+        && !other_pressing_offsets.is_empty()
+    {
+        let offsets: Vec<String> = other_pressing_offsets
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        notes.push(format!(
+            "The databases matched another pressing of this album (pressing offset {}). The audio is identical, so this is an exact copy.",
+            offsets.join(", ")
+        ));
     }
     notes
 }
@@ -1034,7 +1085,12 @@ pub async fn disc_info(drive: Box<dyn DiscDrive>) -> Result<(Box<dyn DiscDrive>,
         (drive, info)
     })
     .await?;
-    Ok((drive, info?))
+    let info = info?;
+    match info.toc.layout() {
+        DiscLayout::Audio | DiscLayout::Enhanced => Ok((drive, info)),
+        DiscLayout::MixedMode => Err(DriveError::MixedMode.into()),
+        DiscLayout::NoAudio => Err(DriveError::NoAudio.into()),
+    }
 }
 
 #[cfg(test)]
@@ -1197,6 +1253,7 @@ mod tests {
                 is_audio: true,
                 pregap: Sectors(0),
                 isrc: None,
+                session: crate::model::SessionNumber::FIRST,
             }],
             Lba(100),
         )
@@ -1225,6 +1282,7 @@ mod tests {
             release: ReleaseMetadata::default(),
             tracks,
             ctdb: CtdbStatus::NotInDatabase,
+            verdict: DiscVerdict::default(),
         }
     }
 
@@ -1268,6 +1326,51 @@ mod tests {
         assert_eq!(fraction(5, 10), 0.5);
         assert_eq!(fraction(20, 10), 1.0);
         assert_eq!(fraction(0, 0), 1.0);
+    }
+
+    #[tokio::test]
+    async fn a_mixed_mode_disc_is_refused_with_a_clear_message() {
+        use crate::fakedisc::FakeDisc;
+        use crate::testsupport::{FakeDiscOptions, make_fake_disc};
+        let dir = tempfile::tempdir().unwrap();
+        let disc = make_fake_disc(
+            dir.path(),
+            &FakeDiscOptions {
+                tracks: 2,
+                seconds: 1,
+                ..FakeDiscOptions::default()
+            },
+        )
+        .unwrap();
+        // Make track 1 computer data: a mixed-mode CD.
+        let mut spec = disc.spec.clone();
+        let mut tracks = spec.toc.tracks().to_vec();
+        tracks[0].is_audio = false;
+        spec.toc = Toc::new(tracks, spec.toc.lead_out()).unwrap();
+        FakeDisc::save_spec(dir.path(), &spec).unwrap();
+        let drive: Box<dyn DiscDrive> =
+            Box::new(crate::drive::fake::FakeDrive::open(dir.path()).unwrap());
+        let error = disc_info(drive).await.err().unwrap();
+        assert!(matches!(error, AppError::Drive(DriveError::MixedMode)));
+        let problem = error.problem();
+        assert!(problem.message.contains("mixed-mode CD"), "{problem:?}");
+
+        // An enhanced CD is fine.
+        let enhanced = tempfile::tempdir().unwrap();
+        make_fake_disc(
+            enhanced.path(),
+            &FakeDiscOptions {
+                tracks: 2,
+                seconds: 1,
+                enhanced: true,
+                ..FakeDiscOptions::default()
+            },
+        )
+        .unwrap();
+        let drive: Box<dyn DiscDrive> =
+            Box::new(crate::drive::fake::FakeDrive::open(enhanced.path()).unwrap());
+        let (_, info) = disc_info(drive).await.unwrap();
+        assert_eq!(info.toc.layout(), DiscLayout::Enhanced);
     }
 
     // -- Services that accept a connection and then never answer ----------

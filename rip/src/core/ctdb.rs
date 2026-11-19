@@ -13,17 +13,19 @@
 //! before INDEX 01 is not part of it. Assumptions, following the CUETools
 //! wiki: the PCM is offset-corrected, 16-bit little-endian stereo, and the
 //! tracks are given exactly as ripped (each running to the next track's
-//! INDEX 01). CTDB stores entries at their own pressing offset; matching a
-//! different pressing (which CUETools does by searching ±5880 samples with
-//! the parity data) is not attempted here: such a rip shows as a mismatch
-//! while AccurateRip, which does search, may still confirm it.
+//! INDEX 01). On an enhanced CD the audio ends with the last audio track,
+//! at the end of the audio session (CUETools `AudioLength`); the data
+//! session is not part of it. CTDB stores entries at their own pressing
+//! offset; [`verify`] compares at our position and
+//! [`super::pressing::ctdb_with_pressings`] searches other pressings with
+//! a rolling CRC (CUETools does it with the parity data instead).
 
 use std::time::Duration;
 
 use url::Url;
 
 use super::{CoreError, Result, discid, with_trailing_slash};
-use crate::model::{BYTES_PER_SAMPLE, CtdbStatus, SAMPLES_PER_SECTOR, Toc};
+use crate::model::{BYTES_PER_SAMPLE, CtdbStatus, SAMPLES_PER_SECTOR, SampleOffset, Toc};
 
 /// Default lookup base URL.
 pub const DEFAULT_BASE: &str = "http://db.cuetools.net/";
@@ -217,6 +219,7 @@ pub fn verify(our_crc: u32, entries: &[CtdbEntry]) -> CtdbStatus {
         Some(entry) => CtdbStatus::Accurate {
             confidence: entry.confidence,
             total,
+            pressing_offset: SampleOffset(0),
         },
         None if entries.is_empty() => CtdbStatus::NotInDatabase,
         None => CtdbStatus::Mismatch { total },
@@ -284,7 +287,8 @@ mod tests {
             verify(0x9b38_421f, &entries),
             CtdbStatus::Accurate {
                 confidence: 1,
-                total: 9
+                total: 9,
+                pressing_offset: SampleOffset(0),
             }
         );
         assert_eq!(verify(1, &entries), CtdbStatus::Mismatch { total: 9 });
@@ -300,6 +304,7 @@ mod tests {
             is_audio: true,
             pregap: Sectors(0),
             isrc: None,
+            session: crate::model::SessionNumber::FIRST,
         };
         Toc::new(
             vec![track(1, 0, first), track(2, first, second)],

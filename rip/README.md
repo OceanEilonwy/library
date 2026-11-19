@@ -65,11 +65,17 @@ the secure reader.
 cd rip
 cargo run --features testsupport -- make-fake-disc /tmp/disc --tracks 3 --seconds 20 \
     --error 500:jitter --error 2000:flaky_once
+# Add --enhanced for an enhanced CD (CD-Extra): after the audio, the gap
+# between sessions and a data track in session 2, which the simulated drive
+# refuses to read as audio.
 
 # Stand-in MusicBrainz, Cover Art Archive, AccurateRip and CTDB that know
 # this disc (album "Sine Tones" by "The Test Card", with a cover), so
 # nothing leaves the machine. It prints `export LIBRARY_RIP_*_URL=…` lines.
 cargo run --features testsupport -- mock-services /tmp/disc --listen 127.0.0.1:8092
+# Add --pressing 102 (or several, OFFSET[:CONFIDENCE]) to make AccurateRip
+# and CTDB know only another pressing, whose audio sits 102 samples later:
+# the rip is then "Accurately ripped (confidence 12, pressing offset +102)".
 
 # In another terminal: paste those export lines, then either open the
 # window with the simulated disc as its only drive…
@@ -92,7 +98,11 @@ Install the system libraries below, put an audio CD in the drive and run
 libcdio-paranoia). Pick the drive on the **Disc** screen; the read offset
 comes from the AccurateRip drive list, or set it under **Settings**. A
 first rip of a disc AccurateRip knows well is the best check that the
-offset is right: every track should say "Accurately ripped". On Linux your
+offset is right: every track should say "Accurately ripped" with no
+"pressing offset" (a pressing offset on every disc you rip, always the
+same, suggests the drive offset is wrong by that much). Enhanced CDs rip
+their audio and leave the data session alone; mixed-mode CDs (data first)
+are refused. On Linux your
 user needs read access to the drive (usually the `optical` or `cdrom`
 group).
 
@@ -110,7 +120,11 @@ API and the Player API that the entry has the right title, artist and year,
 three FLAC tracks with the right numbers and durations, the log, cue sheet
 and `rip.json` as archive files hidden from the Player, every SHA-256, and
 the cover. A second ripper then connects through the browser handshake
-(`/connect`, loopback listener, PKCE) and disconnects itself. It runs as
+(`/connect`, loopback listener, PKCE) and disconnects itself. A second test
+(`enhanced_cd_and_another_pressing_reach_the_real_library`) rips an
+enhanced CD (the data track is never read, counted or uploaded) and then a
+disc the mock databases know only from a pressing 102 samples later, which
+must come out accurately ripped with that pressing offset. It runs as
 part of `cargo test`; the first server build takes a few minutes. Set
 `LIBRARY_SERVER_BIN` to reuse a built server, or `LIBRARY_RIP_SKIP_E2E=1`
 to skip it; if the server cannot be built the test fails with the build
@@ -156,6 +170,10 @@ Pushing a tag `rip-vX.Y.Z` (matching `version` in `Cargo.toml`) runs
 zip (MSYS2 UCRT64 build with its DLLs), macOS dmg and zip per architecture,
 and `SHA256SUMS`, attached to a GitHub release. Copy them into the library's
 `<data_dir>/downloads/library-rip/`. Nothing is signed or notarised yet.
+Each package bundles libcdio and libcdio-paranoia (GPLv3), libFLAC and, on
+Windows, libiconv (LGPL), and carries their source in a `sources` folder
+with `SOURCES.txt` (`rip/packaging/collect-sources.sh` fetches it from
+Ubuntu, MSYS2 or Homebrew, whichever built the copy that was bundled).
 
 To try the packaging without publishing anything, push a branch named
 `ci/rip-release-<anything>` (or run the workflow by hand from `main`): the
@@ -193,7 +211,7 @@ agreement. Each module has its own error type.
 | `src/model.rs` | Phase 0 (shared) | TOC, positions, ids, read results, metadata, verification, report, upload plan |
 | `src/fakedisc.rs` | Phase 0 (shared) | Simulated disc format: `disc.json` + `trackNN.raw` |
 | `src/testsupport.rs` | Phase 0 (shared) | Sine-tone disc generator |
-| `src/core/` | B | `discid`, `accuraterip`, `ctdb`, `offset`, `cue`, `log`, `report_json` |
+| `src/core/` | B | `discid`, `accuraterip`, `ctdb`, `pressing` (other pressings: CRCs over a window of shifts, streamed from the track files), `offset`, `cue`, `log`, `report_json` |
 | `src/drive/` | C | `DiscDrive`/`DriveProvider` traits, `fake` (FakeDrive), `reader` (secure read, test-and-copy, offset, CRC, peak), `cdio/` (FFI, feature `cdio`) |
 | `src/encode/` | C | libFLAC FFI (`ffi.rs`), `encode_flac`, `tags` (Vorbis comments), SHA-256 |
 | `src/library/` | D | `api` (wire types), `client` (rip API), `connect/` (`pkce`, `loopback`, `device`), `keystore` |

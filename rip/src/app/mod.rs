@@ -163,6 +163,10 @@ fn drive_problem(error: &DriveError) -> Problem {
             "This disc has no music on it.",
             "Library Rip copies audio CDs for now. Put in an audio CD and press Look again.",
         ),
+        DriveError::MixedMode => Problem::new(
+            "This is a mixed-mode CD: its first track is computer data and the music comes after it.",
+            "Library Rip cannot copy mixed-mode CDs yet. Enhanced CDs, with the music first, are fine.",
+        ),
         DriveError::Open { device, reason } => Problem::new(
             format!("The drive {device} could not be opened ({reason})."),
             "Check that it is plugged in and not being used by another program, then press Look again.",

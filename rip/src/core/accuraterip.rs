@@ -17,12 +17,9 @@
 //! `u32`). The file does not say whether a checksum is v1 or v2, so ours are
 //! compared with both.
 //!
-//! **Pressings.** Different pressings of the same album are often shifted by
-//! some samples. [`verify_disc`] first compares at our own position; tracks
-//! that do not match are searched over a small window of shifts using v1
-//! (which can be updated in constant time per shift). A track that matches
-//! at another shift is accurate: its audio is identical, only positioned
-//! differently on that pressing.
+//! **Pressings.** [`verify`] compares at our own position only; tracks that
+//! do not match there are searched over a window of shifts for another
+//! pressing by [`super::pressing`].
 
 use std::time::Duration;
 
@@ -31,7 +28,7 @@ use url::Url;
 use super::{CoreError, Result, with_trailing_slash};
 use crate::model::{
     AccurateRipCrc, AccurateRipCrcs, AccurateRipDiscId, AccurateRipStatus, AccurateRipVersion,
-    BYTES_PER_SAMPLE, SAMPLES_PER_SECTOR, TrackNumber,
+    BYTES_PER_SAMPLE, SAMPLES_PER_SECTOR, SampleOffset, TrackNumber,
 };
 
 /// Default database base URL.
@@ -41,9 +38,6 @@ pub const DEFAULT_BASE: &str = "http://www.accuraterip.com/accuraterip/";
 /// multiplier `SKIP_SAMPLES`, so `SKIP_SAMPLES - 1` samples are skipped) and
 /// at the end of the last track.
 const SKIP_SAMPLES: u64 = 5 * SAMPLES_PER_SECTOR as u64;
-
-/// A sensible window for [`verify_disc`]'s pressing search: ±5 sectors.
-pub const DEFAULT_PRESSING_SEARCH: u32 = 5 * SAMPLES_PER_SECTOR;
 
 /// Where a track sits on the disc; the first track skips its first five
 /// sectors less one sample and the last track its final five sectors when
@@ -80,7 +74,7 @@ impl TrackPosition {
     /// The inclusive range of multipliers (1-based sample positions) that
     /// count towards the checksum of a track of `total` samples. Empty
     /// (`first > last`) for tracks shorter than the skipped edges.
-    fn counted(self, total: u64) -> (u64, u64) {
+    pub(crate) fn counted(self, total: u64) -> (u64, u64) {
         let first = match self {
             TrackPosition::First | TrackPosition::Only => SKIP_SAMPLES,
             TrackPosition::Middle | TrackPosition::Last => 1,
@@ -336,11 +330,13 @@ pub fn verify(
                 AccurateRipStatus::Accurate {
                     version: AccurateRipVersion::V2,
                     confidence: v2,
+                    pressing_offset: SampleOffset(0),
                 }
             } else if v1 > 0 {
                 AccurateRipStatus::Accurate {
                     version: AccurateRipVersion::V1,
                     confidence: v1,
+                    pressing_offset: SampleOffset(0),
                 }
             } else {
                 match best {
@@ -351,274 +347,6 @@ pub fn verify(
             (*number, status)
         })
         .collect()
-}
-
-/// Result of [`verify_disc`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DiscVerification {
-    /// Per audio track in disc order: our checksums (of the files as ripped)
-    /// and the database outcome.
-    pub tracks: Vec<(TrackNumber, AccurateRipCrcs, AccurateRipStatus)>,
-    /// When some tracks only matched another pressing: that pressing's
-    /// audio starts this many samples later in our rip (negative: earlier).
-    pub pressing_shift: Option<i32>,
-}
-
-/// A shift at which tracks match the database (see [`find_pressing_shifts`]).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct PressingMatch {
-    /// Samples by which the database's audio is shifted relative to ours:
-    /// track sample `i` of that pressing is our disc sample `start + i + shift`.
-    pub shift: i32,
-    /// Tracks whose v1 checksum matches at this shift.
-    pub matched_tracks: usize,
-    /// Sum of the matching entries' confidence over those tracks.
-    pub confidence: u32,
-}
-
-/// Checksums a whole rip and compares it with the database, searching up to
-/// `max_shift` samples either way for another pressing when tracks do not
-/// match at our own position. `tracks` holds every audio track's
-/// offset-corrected PCM in disc order; samples beyond the disc's edges count
-/// as silence.
-pub fn verify_disc(
-    tracks: &[(TrackNumber, &[u8])],
-    entries: &[DatabaseEntry],
-    max_shift: u32,
-) -> Result<DiscVerification> {
-    let count = tracks.len();
-    let mut ours = Vec::with_capacity(count);
-    for (index, (number, pcm)) in tracks.iter().enumerate() {
-        let position = TrackPosition::for_track(index, count).ok_or_else(too_long)?;
-        ours.push((*number, track_crcs(pcm, position)?));
-    }
-    let mut statuses = verify(&ours, entries);
-    let accurate_here = statuses.iter().filter(|(_, s)| is_accurate(s)).count();
-    let mut pressing_shift = None;
-    if max_shift > 0 && accurate_here < count && !entries.is_empty() {
-        let pcm: Vec<&[u8]> = tracks.iter().map(|(_, pcm)| *pcm).collect();
-        let best = find_pressing_shifts(&pcm, entries, max_shift)?
-            .into_iter()
-            .find(|m| m.shift != 0);
-        if let Some(best) = best {
-            let disc = DiscSamples::new(&pcm)?;
-            let mut shifted = Vec::with_capacity(count);
-            for (index, (number, _)) in tracks.iter().enumerate() {
-                let position = TrackPosition::for_track(index, count).ok_or_else(too_long)?;
-                let audio = disc.shifted_track(index, best.shift)?;
-                shifted.push((*number, track_crcs(&audio, position)?));
-            }
-            let there = verify(&shifted, entries);
-            let mut improved = false;
-            for ((_, status), (_, other)) in statuses.iter_mut().zip(there) {
-                if !is_accurate(status) && is_accurate(&other) {
-                    *status = other;
-                    improved = true;
-                }
-            }
-            if improved {
-                pressing_shift = Some(best.shift);
-            }
-        }
-    }
-    Ok(DiscVerification {
-        tracks: ours
-            .into_iter()
-            .zip(statuses)
-            .map(|((number, crcs), (_, status))| (number, crcs, status))
-            .collect(),
-        pressing_shift,
-    })
-}
-
-/// Every shift in `-max_shift..=max_shift` at which at least one track's v1
-/// checksum matches an entry, best first (most tracks, then most
-/// confidence, then the smallest shift).
-pub fn find_pressing_shifts(
-    tracks: &[&[u8]],
-    entries: &[DatabaseEntry],
-    max_shift: u32,
-) -> Result<Vec<PressingMatch>> {
-    let disc = DiscSamples::new(tracks)?;
-    let count = tracks.len();
-    let relevant: Vec<&DatabaseEntry> = entries
-        .iter()
-        .filter(|entry| entry.tracks.len() == count)
-        .collect();
-    let max = i64::from(max_shift);
-    // Per track: the counted multipliers (a..=b), the disc index of its
-    // first sample, the running v1 sum S and the plain sum P at the current
-    // shift.
-    let mut windows = Vec::with_capacity(count);
-    for index in 0..count {
-        let position = TrackPosition::for_track(index, count).ok_or_else(too_long)?;
-        let length = disc.track_length(index)?;
-        let (a, b) = position.counted(u64::try_from(length).map_err(|_| too_long())?);
-        let a = i64::try_from(a).map_err(|_| too_long())?;
-        let b = i64::try_from(b).map_err(|_| too_long())?;
-        let base = disc.track_start(index)?;
-        let mut weighted = 0u32;
-        let mut plain = 0u32;
-        let mut m = a;
-        while m <= b {
-            let value = disc.at(base + m - 1 - max);
-            let factor = u32::try_from(m).map_err(|_| too_long())?;
-            weighted = weighted.wrapping_add(factor.wrapping_mul(value));
-            plain = plain.wrapping_add(value);
-            m += 1;
-        }
-        windows.push(ShiftWindow {
-            a,
-            b,
-            base,
-            weighted,
-            plain,
-        });
-    }
-    let mut matches = Vec::new();
-    let mut shift = -max;
-    while shift <= max {
-        let mut matched_tracks = 0usize;
-        let mut confidence = 0u32;
-        for (index, window) in windows.iter().enumerate() {
-            if window.a > window.b {
-                continue;
-            }
-            let found: u32 = relevant
-                .iter()
-                .filter_map(|entry| entry.tracks.get(index))
-                .filter(|track| track.crc != 0 && track.crc == window.weighted)
-                .map(|track| u32::from(track.confidence))
-                .sum();
-            if found > 0 {
-                matched_tracks += 1;
-                confidence += found;
-            }
-        }
-        if matched_tracks > 0 {
-            matches.push(PressingMatch {
-                shift: i32::try_from(shift).map_err(|_| too_long())?,
-                matched_tracks,
-                confidence,
-            });
-        }
-        for window in &mut windows {
-            window.step(&disc, shift)?;
-        }
-        shift += 1;
-    }
-    matches.sort_by(|x, y| {
-        y.matched_tracks
-            .cmp(&x.matched_tracks)
-            .then(y.confidence.cmp(&x.confidence))
-            .then(x.shift.unsigned_abs().cmp(&y.shift.unsigned_abs()))
-            .then(x.shift.cmp(&y.shift))
-    });
-    Ok(matches)
-}
-
-/// The v1 sum of one track at one shift, updated in constant time per step.
-struct ShiftWindow {
-    a: i64,
-    b: i64,
-    base: i64,
-    weighted: u32,
-    plain: u32,
-}
-
-impl ShiftWindow {
-    /// Moves from `shift` to `shift + 1`. With `y(m)` the sample under
-    /// multiplier `m` at the current shift:
-    /// `S' = S − a·y(a) + (b+1)·y(b+1) − (P − y(a) + y(b+1))` and
-    /// `P' = P − y(a) + y(b+1)`.
-    fn step(&mut self, disc: &DiscSamples<'_>, shift: i64) -> Result<()> {
-        if self.a > self.b {
-            return Ok(());
-        }
-        let leaving = disc.at(self.base + self.a - 1 + shift);
-        let entering = disc.at(self.base + self.b + shift);
-        let a = u32::try_from(self.a).map_err(|_| too_long())?;
-        let after_b = u32::try_from(self.b + 1).map_err(|_| too_long())?;
-        let plain = self.plain.wrapping_sub(leaving).wrapping_add(entering);
-        self.weighted = self
-            .weighted
-            .wrapping_sub(a.wrapping_mul(leaving))
-            .wrapping_add(after_b.wrapping_mul(entering))
-            .wrapping_sub(plain);
-        self.plain = plain;
-        Ok(())
-    }
-}
-
-/// All audio tracks seen as one run of samples, silent beyond both edges.
-struct DiscSamples<'a> {
-    tracks: &'a [&'a [u8]],
-    /// Disc sample index of each track's first sample, plus the total.
-    starts: Vec<i64>,
-}
-
-impl<'a> DiscSamples<'a> {
-    fn new(tracks: &'a [&'a [u8]]) -> Result<Self> {
-        let mut starts = Vec::with_capacity(tracks.len() + 1);
-        let mut total = 0i64;
-        starts.push(0);
-        for pcm in tracks {
-            if pcm.len() % BYTES_PER_SAMPLE != 0 {
-                return Err(CoreError::Invalid(
-                    "audio data must be whole stereo samples (4 bytes each)".into(),
-                ));
-            }
-            let samples = i64::try_from(pcm.len() / BYTES_PER_SAMPLE).map_err(|_| too_long())?;
-            total = total.checked_add(samples).ok_or_else(too_long)?;
-            starts.push(total);
-        }
-        Ok(DiscSamples { tracks, starts })
-    }
-
-    fn track_start(&self, index: usize) -> Result<i64> {
-        self.starts.get(index).copied().ok_or_else(too_long)
-    }
-
-    fn track_length(&self, index: usize) -> Result<i64> {
-        let end = self.starts.get(index + 1).copied().ok_or_else(too_long)?;
-        Ok(end - self.track_start(index)?)
-    }
-
-    /// The sample at disc index `index`, or silence outside the disc.
-    fn at(&self, index: i64) -> u32 {
-        if index < 0 {
-            return 0;
-        }
-        let track = self.starts.partition_point(|start| *start <= index);
-        let Some(track) = track.checked_sub(1) else {
-            return 0;
-        };
-        let (Some(pcm), Some(start)) = (self.tracks.get(track), self.starts.get(track)) else {
-            return 0;
-        };
-        let Ok(within) = usize::try_from(index - start) else {
-            return 0;
-        };
-        let offset = within * BYTES_PER_SAMPLE;
-        pcm.get(offset..offset + BYTES_PER_SAMPLE)
-            .and_then(|bytes| bytes.first_chunk::<4>())
-            .map_or(0, |bytes| u32::from_le_bytes(*bytes))
-    }
-
-    /// Track `index` as it would be cut with its start moved by `shift`.
-    fn shifted_track(&self, index: usize, shift: i32) -> Result<Vec<u8>> {
-        let start = self.track_start(index)? + i64::from(shift);
-        let length = self.track_length(index)?;
-        let mut out = Vec::with_capacity(usize::try_from(length).map_err(|_| too_long())? * 4);
-        for i in 0..length {
-            out.extend_from_slice(&self.at(start + i).to_le_bytes());
-        }
-        Ok(out)
-    }
-}
-
-fn is_accurate(status: &AccurateRipStatus) -> bool {
-    matches!(status, AccurateRipStatus::Accurate { .. })
 }
 
 fn cut_short() -> CoreError {
@@ -867,14 +595,16 @@ mod tests {
             result[0].1,
             AccurateRipStatus::Accurate {
                 version: AccurateRipVersion::V1,
-                confidence: 5
+                confidence: 5,
+                pressing_offset: SampleOffset(0),
             }
         );
         assert_eq!(
             result[1].1,
             AccurateRipStatus::Accurate {
                 version: AccurateRipVersion::V2,
-                confidence: 3
+                confidence: 3,
+                pressing_offset: SampleOffset(0),
             }
         );
         assert_eq!(
@@ -885,7 +615,8 @@ mod tests {
             result[3].1,
             AccurateRipStatus::Accurate {
                 version: AccurateRipVersion::V2,
-                confidence: 3
+                confidence: 3,
+                pressing_offset: SampleOffset(0),
             }
         );
         assert_eq!(result[3].0, number(4));
@@ -900,114 +631,6 @@ mod tests {
             verify(&ours, &entries)[0].1,
             AccurateRipStatus::NotInDatabase
         );
-    }
-
-    /// Builds a database entry from checksums.
-    fn entry(crcs: &[u32], confidence: u8) -> DatabaseEntry {
-        DatabaseEntry {
-            disc: disc_id(),
-            tracks: crcs
-                .iter()
-                .map(|crc| DatabaseTrack {
-                    confidence,
-                    crc: *crc,
-                    frame450_crc: 0,
-                })
-                .collect(),
-        }
-    }
-
-    #[test]
-    fn shift_search_matches_direct_computation() {
-        let disc = noise(11, 30);
-        let tracks: Vec<&[u8]> = vec![
-            &disc[..10 * 2352],
-            &disc[10 * 2352..18 * 2352],
-            &disc[18 * 2352..],
-        ];
-        let samples = DiscSamples::new(&tracks).unwrap();
-        for shift in [-7i32, -1, 0, 3, 12] {
-            let mut expected = Vec::new();
-            for index in 0..3 {
-                let audio = samples.shifted_track(index, shift).unwrap();
-                let position = TrackPosition::for_track(index, 3).unwrap();
-                expected.push(track_crcs(&audio, position).unwrap().v1.0);
-            }
-            let found = find_pressing_shifts(&tracks, &[entry(&expected, 2)], 15).unwrap();
-            let best = found[0];
-            assert_eq!(best.shift, shift);
-            assert_eq!(best.matched_tracks, 3);
-            assert_eq!(best.confidence, 6);
-        }
-    }
-
-    #[test]
-    fn verify_disc_finds_another_pressing() {
-        // The database's pressing starts 9 samples later than our rip.
-        let disc = noise(5, 24);
-        let tracks: Vec<&[u8]> = vec![
-            &disc[..8 * 2352],
-            &disc[8 * 2352..16 * 2352],
-            &disc[16 * 2352..],
-        ];
-        let samples = DiscSamples::new(&tracks).unwrap();
-        let theirs: Vec<AccurateRipCrcs> = (0..3)
-            .map(|i| {
-                let audio = samples.shifted_track(i, 9).unwrap();
-                track_crcs(&audio, TrackPosition::for_track(i, 3).unwrap()).unwrap()
-            })
-            .collect();
-        let entries = [
-            entry(&theirs.iter().map(|c| c.v1.0).collect::<Vec<_>>(), 4),
-            entry(&theirs.iter().map(|c| c.v2.0).collect::<Vec<_>>(), 6),
-        ];
-        let numbered: Vec<(TrackNumber, &[u8])> = tracks
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (number(i as u8 + 1), *t))
-            .collect();
-
-        let without_search = verify_disc(&numbered, &entries, 0).unwrap();
-        assert!(
-            without_search
-                .tracks
-                .iter()
-                .all(|(_, _, s)| matches!(s, AccurateRipStatus::Mismatch { .. }))
-        );
-        assert_eq!(without_search.pressing_shift, None);
-
-        let result = verify_disc(&numbered, &entries, 20).unwrap();
-        assert_eq!(result.pressing_shift, Some(9));
-        for (index, (_, ours, status)) in result.tracks.iter().enumerate() {
-            assert_eq!(
-                *status,
-                AccurateRipStatus::Accurate {
-                    version: AccurateRipVersion::V2,
-                    confidence: 6
-                }
-            );
-            // Our checksums still describe our own files.
-            let position = TrackPosition::for_track(index, 3).unwrap();
-            assert_eq!(*ours, track_crcs(tracks[index], position).unwrap());
-        }
-    }
-
-    #[test]
-    fn verify_disc_prefers_our_own_position() {
-        let disc = noise(9, 16);
-        let tracks: Vec<&[u8]> = vec![&disc[..8 * 2352], &disc[8 * 2352..]];
-        let ours: Vec<AccurateRipCrcs> = (0..2)
-            .map(|i| track_crcs(tracks[i], TrackPosition::for_track(i, 2).unwrap()).unwrap())
-            .collect();
-        let entries = [entry(&[ours[0].v2.0, ours[1].v2.0], 9)];
-        let numbered = [(number(1), tracks[0]), (number(2), tracks[1])];
-        let result = verify_disc(&numbered, &entries, 50).unwrap();
-        assert_eq!(result.pressing_shift, None);
-        assert!(result.tracks.iter().all(|(_, _, s)| *s
-            == AccurateRipStatus::Accurate {
-                version: AccurateRipVersion::V2,
-                confidence: 9
-            }));
     }
 
     #[tokio::test]

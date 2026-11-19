@@ -656,6 +656,7 @@ mod tests {
             seconds: 2,
             read_offset: SampleOffset(-48),
             errors,
+            enhanced: false,
         };
         let disc = make_fake_disc(&disc_dir, &options).unwrap();
         let mut drive = FakeDrive::open(&disc_dir).unwrap();

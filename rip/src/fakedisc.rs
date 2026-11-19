@@ -12,7 +12,9 @@
 //!
 //! Each `trackNN.raw` holds exactly `length_sectors × 2352` bytes, as the
 //! audio would be read by a drive with **zero** read offset. Data tracks
-//! (`isAudio: false`) have no file and read as silence-free zeros.
+//! (`isAudio: false`) have no file; reading them, or the gap before a later
+//! session's first track, fails as it would on a real drive. An enhanced CD
+//! puts its data track in `"session": 2` (see [`crate::model::Toc`]).
 //!
 //! `disc.json` example:
 //!

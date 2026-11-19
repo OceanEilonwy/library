@@ -18,8 +18,11 @@
 //!
 //! Offset correction: a drive with read offset `+n` returns true sample
 //! `N - n` at position `N`, so true sample `M` is read at drive position
-//! `M + n`. Samples that fall before the start of the disc or past the
-//! lead-out are filled with silence (drives cannot read there reliably).
+//! `M + n`. Samples that fall before the start of the disc or past the end
+//! of the audio are filled with silence (drives cannot read there
+//! reliably). The end of the audio is the lead-out, or on an enhanced CD the
+//! end of the audio session ([`crate::model::Toc::audio_end`]): the gap
+//! between the sessions and the data track are never asked for.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -76,7 +79,8 @@ struct Geometry {
     drive_start: i64,
     /// Bytes in the track.
     track_bytes: i64,
-    /// Bytes on the disc up to the lead-out (readable range is `0..this`).
+    /// Bytes on the disc up to the end of the audio (readable range is
+    /// `0..this`; see [`crate::model::Toc::audio_end`]).
     disc_bytes: i64,
 }
 
@@ -272,8 +276,10 @@ fn peak_of(bytes: &[u8]) -> u16 {
 /// Reads one track into `pcm_path` (offset-corrected, exactly
 /// `length_sectors × 2352` bytes), verifying per the mode.
 ///
-/// `lead_out_sectors` is the disc's lead-out position counted from sector 0
-/// (`toc.lead_out().0`): the reader never asks the drive for sectors past it.
+/// `lead_out_sectors` is where the readable audio ends, counted from sector
+/// 0: [`crate::model::Toc::audio_end`], which is the lead-out of an audio CD
+/// and the end of the audio session of an enhanced CD. The reader never asks
+/// the drive for sectors at or past it.
 pub fn read_track(
     drive: &mut dyn DiscDrive,
     track: &TrackEntry,
@@ -658,6 +664,10 @@ mod tests {
     }
 
     fn rig(tracks: u8, offset: i32, errors: Vec<InjectedError>) -> Rig {
+        rig_of(tracks, offset, errors, false)
+    }
+
+    fn rig_of(tracks: u8, offset: i32, errors: Vec<InjectedError>, enhanced: bool) -> Rig {
         let dir = tempfile::tempdir().unwrap();
         let disc_dir = dir.path().join("disc");
         make_fake_disc(
@@ -667,6 +677,7 @@ mod tests {
                 seconds: 2,
                 read_offset: SampleOffset(offset),
                 errors,
+                enhanced,
             },
         )
         .unwrap();
@@ -691,7 +702,7 @@ mod tests {
             let result = read_track(
                 &mut self.drive,
                 &track,
-                Sectors(info.toc.lead_out().0),
+                Sectors(info.toc.audio_end().unwrap().0),
                 options,
                 &path,
                 &mut |p| seen.push(p),
@@ -731,6 +742,65 @@ mod tests {
             let last = progress.last().unwrap();
             assert_eq!(last.sectors_done, last.sectors_total);
             assert_eq!(last.pass, 1);
+        }
+    }
+
+    #[test]
+    fn an_enhanced_cd_never_touches_the_session_gap_or_the_data_track() {
+        // A drive reading 600 samples late: correcting it reaches past the
+        // last audio track, into what on this disc is the session gap.
+        for mode in [ReadMode::Secure, ReadMode::TestAndCopy] {
+            let mut rig = rig_of(2, 600, Vec::new(), true);
+            for number in 1..=2 {
+                let (result, pcm, _) = rig.read(number, &options(mode, 600));
+                let truth = rig.truth(number);
+                assert!(result.is_clean());
+                if number == 2 {
+                    // The final 600 samples are past the audio: silence.
+                    let cut = truth.len() - 600 * 4;
+                    assert_eq!(&pcm[..cut], &truth[..cut]);
+                    assert!(pcm[cut..].iter().all(|b| *b == 0));
+                } else {
+                    assert_eq!(pcm, truth);
+                }
+            }
+            assert_eq!(rig.drive.refused_reads(), 0, "{mode:?}");
+            // Reading to the lead-out instead would have hit the gap.
+            let info = rig.drive.disc_info().unwrap();
+            let last = info
+                .toc
+                .track(TrackNumber::new(2).unwrap())
+                .unwrap()
+                .clone();
+            let path = rig.dir.path().join("wrong.pcm");
+            let error = read_track(
+                &mut rig.drive,
+                &last,
+                Sectors(info.toc.lead_out().0),
+                &options(mode, 600),
+                &path,
+                &mut |_| {},
+            )
+            .unwrap_err();
+            assert!(matches!(error, DriveError::Read { .. }), "{error}");
+            assert_eq!(rig.drive.refused_reads(), 1);
+            // And the data track is never read as audio.
+            let data = info
+                .toc
+                .track(TrackNumber::new(3).unwrap())
+                .unwrap()
+                .clone();
+            assert!(matches!(
+                read_track(
+                    &mut rig.drive,
+                    &data,
+                    Sectors(info.toc.lead_out().0),
+                    &options(mode, 0),
+                    &path,
+                    &mut |_| {},
+                ),
+                Err(DriveError::NoAudio)
+            ));
         }
     }
 

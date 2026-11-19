@@ -345,8 +345,13 @@ impl ViewModel {
             (DiscPhase::Ready, Some(disc)) => {
                 let audio = disc.toc.audio_tracks().count();
                 let tracks = if audio == 1 { "track" } else { "tracks" };
+                let data = if disc.toc.data_tracks().next().is_some() {
+                    " · enhanced CD (its computer data is left alone)"
+                } else {
+                    ""
+                };
                 format!(
-                    "{audio} {tracks} · {} · in {}",
+                    "{audio} {tracks} · {}{data} · in {}",
                     duration(disc.toc.audio_duration_ms()),
                     disc.drive
                 )
@@ -719,6 +724,7 @@ mod tests {
                     Some(AccurateRipStatus::Accurate {
                         version: AccurateRipVersion::V2,
                         confidence: 12,
+                        pressing_offset: crate::model::SampleOffset(0),
                     }),
                     0,
                 ),

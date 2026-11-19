@@ -138,6 +138,46 @@ librarian, downloadable. `sha256` is stored for every uploaded file.
   against `http://www.accuraterip.com/accuraterip/…/dBAR-…bin`; CTDB lookup
   (`db.cuetools.net`) for an independent confidence count. Results per track:
   "Accurately ripped (confidence N)", "Not in database", or "Mismatch".
+- **Other pressings:** a track that does not match at our own position is
+  searched for another pressing of the album: its v1 and v2 CRCs at every
+  shift within ±2,939 samples (5 × 588 − 1, as CUETools; `pressingSearch`
+  in `settings.json` changes it, `0` turns it off), compared with every
+  entry of the `dBAR` file; the CTDB disc CRC likewise (a rolling CRC-32).
+  Neighbouring samples come from the saved per-track PCM files, streamed
+  from disk (no whole-disc buffer); v1 is updated in constant time per
+  shift, v2 through an exact filter plus a direct check of the few shifts
+  it lets through (the maths is in `rip/src/core/pressing.rs`). A match
+  with our own pressing always wins; otherwise the most confident. A track
+  that matches only another pressing is **accurately ripped**: its audio is
+  bit-for-bit what that pressing's rippers got, merely positioned
+  differently on the disc, so it is an exact archival copy. It is shown as
+  "Accurately ripped (confidence 8, pressing offset +102)" (`+k`: that
+  pressing's audio sits `k` samples later on its disc), and the log
+  explains it. `rip.json` (format version 2; version 1 files still parse)
+  records per track the matching pressing's offset, confidence and v1/v2
+  (`accuraterip.pressingOffset`, `confidence`, `version`), the CTDB
+  pressing offset, and a disc `verdict`: `readErrors`, `accurate` (with
+  `otherPressingOffsets`), `partlyAccurate`, `mismatch`, `notInDatabase`
+  or `unchecked`.
+- **Enhanced CDs** (CD-Extra / Blue Book: an audio session, then a data
+  session): the last audio track ends where the audio session does, not at
+  the data track. That end comes from the drive's full TOC (MMC READ TOC
+  format 2: sessions and each session's lead-out) when it gives one, else
+  from libcdio's last-session start, else (as libdiscid and whipper assume)
+  11,400 sectors before the data track (lead-out 6,750 + lead-in 4,500 +
+  pre-gap 150). The reader never asks for the gap or the data track, and
+  progress counts audio only. Disc IDs follow each service: MusicBrainz
+  leaves the data track out and uses the audio session's end as lead-out;
+  freedb counts every track and the real lead-out; AccurateRip sums the
+  audio tracks' offsets plus the real lead-out (the end of the data track),
+  with the audio track count in the file name, and checksums audio tracks
+  only; the CTDB TOC lists the data track as `-start` and ends with the real
+  lead-out, its CRC covering the audio only. Known answers from a real disc
+  (Ladyhawke, via whipper's tests) are in `rip/src/core/discid.rs`. The cue
+  sheet has a `FILE` per audio track and notes each data track as `REM DATA
+  TRACK nn SESSION s START … LENGTH …`; the log lists "Data track nn (not
+  ripped)". **Mixed-mode CDs** (a data track before the audio) are refused
+  with a plain message.
   Each AccurateRip, CTDB and drive-list request gives up after 30 seconds
   (reported as "it took too long"; the rip goes on), every connection
   fails after 2 minutes of silence, and **Cancel** works while waiting for
@@ -257,12 +297,17 @@ Plain English, woodworking-free, library tone. Works with keyboard only.
 A simulated disc is a folder read by `FakeDrive` (`rip/src/fakedisc.rs`):
 
 - `disc.json` — `{"drive": {"vendor","model","revision"}, "readOffset": 6,
-  "toc": {"tracks": [{"number","startLba","lengthSectors","isAudio","pregap","isrc"}], "leadOut"},
+  "toc": {"tracks": [{"number","startLba","lengthSectors","isAudio","pregap","isrc","session"}], "leadOut"},
   "mcn": null, "cdText": null, "errors": [{"lba": 700, "kind": "unreadable" | "jitter" | "flaky_once"}]}`
+  (`session` defaults to 1; within a session tracks are contiguous, a new
+  session may start after a gap).
 - `track01.raw`, `track02.raw`, … — 16-bit little-endian stereo 44.1 kHz
-  PCM, exactly `lengthSectors × 2352` bytes each, as read with zero offset.
+  PCM, exactly `lengthSectors × 2352` bytes each, as read with zero offset,
+  for audio tracks only (data tracks have no file).
   `FakeDrive` shifts its output by `-readOffset` samples so that applying
-  the `+readOffset` correction recovers the files exactly.
+  the `+readOffset` correction recovers the files exactly. Asking it for a
+  sector in a data track or in the gap between sessions fails the read, as
+  on a real drive, so tests prove the ripper never does.
 - Injected errors, per sector: `unreadable` returns different garbage on
   every read (paranoia reports it after 20 tries); `jitter` lands reads a
   few samples early or late in a repeating cycle (paranoia corrects it);
@@ -270,12 +315,16 @@ A simulated disc is a folder read by `FakeDrive` (`rip/src/fakedisc.rs`):
   off, every error passes through unnoticed.
 
 `library-rip make-fake-disc DIR --tracks 3 --seconds 20 [--offset 6]
-[--error LBA:KIND …]` writes one of sine tones (KIND `unreadable`, `jitter`
-or `flaky_once`); `library-rip mock-services DIR [--listen ADDR]` serves
+[--error LBA:KIND …] [--enhanced]` writes one of sine tones (KIND
+`unreadable`, `jitter` or `flaky_once`; `--enhanced` adds the 11,400-sector
+session gap and a 1,500-sector data track in session 2);
+`library-rip mock-services DIR [--listen ADDR] [--pressing OFFSET[:CONFIDENCE] …]` serves
 stand-in MusicBrainz (album "Sine Tones" by "The Test Card", tracks named
 after their tones), Cover Art Archive, AccurateRip (its drive list with the
 simulated drive at its true offset, and a `dBAR` with the disc's v1 and v2
-CRCs) and CTDB answers for it, worked out from the track files, and prints
+CRCs) and CTDB answers for it, worked out from the track files (by default
+for the disc's own pressing; `--pressing 102` makes the databases know only
+a pressing whose audio sits 102 samples later), and prints
 the `LIBRARY_RIP_MUSICBRAINZ_URL`, `LIBRARY_RIP_COVER_ART_URL`,
 `LIBRARY_RIP_ACCURATERIP_URL`, `LIBRARY_RIP_DRIVE_OFFSETS_URL` and
 `LIBRARY_RIP_CTDB_URL` variables that point both the window and the
@@ -296,7 +345,12 @@ with the real `library-rip headless --device-code` binary against
 `mock-services`, approves the code over HTTP as the librarian, then checks
 the entry, tracks, durations, archive files (hidden from the Player),
 SHA-256s and cover through the rip and Player APIs; a second run connects
-through `/connect` and the loopback listener and disconnects itself.
+through `/connect` and the loopback listener and disconnects itself. A
+second test rips an enhanced simulated disc (three audio tracks, a data
+track in session 2) and checks the data track is neither read nor counted
+(disc ids, cue, log, `rip.json`, the library's tracks), then rips a disc
+the mock databases know only from a `+102` pressing and checks it is
+reported accurately ripped with that pressing offset.
 `player/e2e/ripper.spec.ts` drives `/connect` (unlock, **Yes**/**No**, the
 redirect to a loopback listener, the token swap) and `/ripper` in Chromium.
 

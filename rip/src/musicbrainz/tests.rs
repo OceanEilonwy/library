@@ -29,6 +29,7 @@ fn toc(tracks: u8) -> Toc {
             is_audio: true,
             pregap: Sectors(0),
             isrc: None,
+            session: crate::model::SessionNumber::FIRST,
         })
         .collect();
     Toc::new(entries, Lba(u32::from(tracks) * 1000)).unwrap()
@@ -386,6 +387,7 @@ fn toc_parameter_leaves_out_trailing_data_tracks() {
         is_audio: false,
         pregap: Sectors(0),
         isrc: None,
+        session: crate::model::SessionNumber::FIRST,
     });
     entries[1].length_sectors = Sectors(12_400);
     let enhanced = Toc::new(entries, Lba(14_400)).unwrap();

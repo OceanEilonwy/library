@@ -1578,6 +1578,7 @@ mod tests {
                 is_audio: true,
                 pregap: Sectors(0),
                 isrc: None,
+                session: crate::model::SessionNumber::FIRST,
             })
             .collect();
         DiscInfo {
@@ -1676,6 +1677,7 @@ mod tests {
                 release: ReleaseMetadata::default(),
                 tracks: vec![report_track(1, Vec::new()), report_track(2, unrecovered)],
                 ctdb: CtdbStatus::NotInDatabase,
+                verdict: crate::model::DiscVerdict::default(),
             },
             plan: UploadPlan {
                 item: ItemTarget::New(NewItem::default()),
@@ -1985,6 +1987,7 @@ mod tests {
                 AccurateRipStatus::Accurate {
                     version: crate::model::AccurateRipVersion::V2,
                     confidence: 12,
+                    pressing_offset: crate::model::SampleOffset(0),
                 },
             )],
             ctdb: CtdbStatus::NotInDatabase,

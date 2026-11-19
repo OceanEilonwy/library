@@ -9,8 +9,8 @@ use std::path::Path;
 
 use crate::fakedisc::{FakeDisc, FakeDiscError, FakeDiscSpec, InjectedError, track_file_name};
 use crate::model::{
-    DriveIdentity, Lba, ModelError, SAMPLE_RATE, SECTORS_PER_SECOND, SampleOffset, Sectors, Toc,
-    TrackEntry, TrackNumber,
+    DriveIdentity, Lba, ModelError, SAMPLE_RATE, SECTORS_PER_SECOND, SESSION_GAP_SECTORS,
+    SampleOffset, Sectors, SessionNumber, Toc, TrackEntry, TrackNumber,
 };
 
 /// What to generate.
@@ -24,7 +24,15 @@ pub struct FakeDiscOptions {
     pub read_offset: SampleOffset,
     /// Read errors to inject.
     pub errors: Vec<InjectedError>,
+    /// Make an enhanced CD (CD-Extra): after the audio, the
+    /// [`SESSION_GAP_SECTORS`]-sector gap between sessions and a data
+    /// track of [`DATA_TRACK_SECTORS`] in session 2. Neither the gap nor
+    /// the data can be read as audio: the simulated drive fails on them.
+    pub enhanced: bool,
 }
+
+/// Length of the data track of an enhanced simulated disc (20 seconds).
+pub const DATA_TRACK_SECTORS: u32 = 1500;
 
 impl Default for FakeDiscOptions {
     fn default() -> Self {
@@ -33,6 +41,7 @@ impl Default for FakeDiscOptions {
             seconds: 20,
             read_offset: SampleOffset(6),
             errors: Vec::new(),
+            enhanced: false,
         }
     }
 }
@@ -112,9 +121,32 @@ pub fn make_fake_disc(dir: &Path, options: &FakeDiscOptions) -> Result<FakeDisc,
             is_audio: true,
             pregap: Sectors(0),
             isrc: None,
+            session: SessionNumber::FIRST,
         });
         start = start
             .checked_add(length)
+            .ok_or_else(|| GenerateError::Options("the disc is too long".into()))?;
+    }
+    if options.enhanced {
+        if options.tracks > 98 {
+            return Err(GenerateError::Options(
+                "an enhanced disc needs a track number left for its data track".into(),
+            ));
+        }
+        let data_start = start
+            .checked_add(Sectors(SESSION_GAP_SECTORS))
+            .ok_or_else(|| GenerateError::Options("the disc is too long".into()))?;
+        entries.push(TrackEntry {
+            number: TrackNumber::new(options.tracks + 1)?,
+            start_lba: data_start,
+            length_sectors: Sectors(DATA_TRACK_SECTORS),
+            is_audio: false,
+            pregap: Sectors(0),
+            isrc: None,
+            session: SessionNumber::new(2)?,
+        });
+        start = data_start
+            .checked_add(Sectors(DATA_TRACK_SECTORS))
             .ok_or_else(|| GenerateError::Options("the disc is too long".into()))?;
     }
     let spec = FakeDiscSpec {
@@ -154,6 +186,31 @@ mod tests {
         let bytes = std::fs::read(disc.track_path(TrackNumber::new(2).unwrap())).unwrap();
         assert_eq!(bytes.len(), 75 * BYTES_PER_SECTOR);
         assert!(bytes.iter().any(|b| *b != 0));
+    }
+
+    #[test]
+    fn generates_an_enhanced_disc() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = FakeDiscOptions {
+            tracks: 2,
+            seconds: 1,
+            enhanced: true,
+            ..FakeDiscOptions::default()
+        };
+        let disc = make_fake_disc(dir.path(), &options).unwrap();
+        let toc = &disc.spec.toc;
+        assert_eq!(toc.tracks().len(), 3);
+        assert_eq!(toc.audio_tracks().count(), 2);
+        assert_eq!(toc.audio_end(), Some(Lba(150)));
+        let data = &toc.tracks()[2];
+        assert!(!data.is_audio);
+        assert_eq!(data.session.get(), 2);
+        assert_eq!(data.start_lba, Lba(150 + 11_400));
+        assert_eq!(toc.lead_out(), Lba(150 + 11_400 + 1500));
+        assert_eq!(toc.layout(), crate::model::DiscLayout::Enhanced);
+        // No file for the data track.
+        assert!(!disc.track_path(data.number).exists());
+        assert_eq!(FakeDisc::load(dir.path()).unwrap(), disc);
     }
 
     #[test]

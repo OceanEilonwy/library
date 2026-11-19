@@ -12,6 +12,11 @@
 //! own file (`INDEX 00` of track 1, when it was ripped) or a `PREGAP` of the
 //! same length (when it was not, so the disc's timing is still recorded).
 //!
+//! Data tracks (an enhanced CD's data session, after the audio) are not
+//! ripped, so they get no `FILE` or `TRACK`; each is noted in the header as
+//! `REM DATA TRACK nn SESSION s START lba LENGTH sectors "not ripped …"`,
+//! so the disc's layout is still on record.
+//!
 //! Titles and performers come from the confirmed metadata, falling back to
 //! the disc's CD-Text. `CATALOG` is the disc's MCN; `ISRC`s are those read
 //! from the disc. Text is UTF-8 without a byte-order mark, lines end in CRLF,
@@ -63,6 +68,12 @@ pub fn render_with_htoa(input: &CueInput<'_>, htoa_file: Option<&str>) -> Result
     }
     lines.push(format!("REM DISCID {:08X}", discid::cddb_disc_id(toc)?));
     lines.push(format!("REM COMMENT \"Library Rip {}\"", crate::VERSION));
+    for data in toc.data_tracks() {
+        lines.push(format!(
+            "REM DATA TRACK {} SESSION {} START {} LENGTH {} \"not ripped (computer data)\"",
+            data.number, data.session, data.start_lba, data.length_sectors.0
+        ));
+    }
     if let Some(mcn) = disc.mcn.as_ref().filter(|m| !m.is_blank()) {
         lines.push(format!("CATALOG {}", mcn.as_str()));
     }
@@ -198,7 +209,9 @@ fn quote(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{CdText, CdTextTrack, DriveIdentity, Isrc, Lba, Mcn, Toc, TrackMetadata};
+    use crate::model::{
+        CdText, CdTextTrack, DriveIdentity, Isrc, Lba, Mcn, SessionNumber, Toc, TrackMetadata,
+    };
 
     fn number(n: u8) -> TrackNumber {
         TrackNumber::new(n).unwrap()
@@ -212,6 +225,7 @@ mod tests {
             is_audio: true,
             pregap: Sectors(pregap),
             isrc: None,
+            session: SessionNumber::FIRST,
         }
     }
 
@@ -345,8 +359,11 @@ mod tests {
 
     #[test]
     fn data_tracks_are_left_out() {
-        let mut tracks = vec![entry(1, 0, 15000, 0), entry(2, 15000, 20000, 0)];
+        // An enhanced CD: the audio session ends at 15000, the data track
+        // starts session 2 at 26400.
+        let mut tracks = vec![entry(1, 0, 15000, 0), entry(2, 26_400, 20000, 0)];
         tracks[1].is_audio = false;
+        tracks[1].session = SessionNumber::new(2).unwrap();
         let disc = disc(tracks);
         let release = ReleaseMetadata::default();
         let file_names = names(1);
@@ -356,8 +373,16 @@ mod tests {
             file_names: &file_names,
         })
         .unwrap();
-        assert!(!text.contains("TRACK 02"));
+        assert!(!text.contains("  TRACK 02"));
         assert_eq!(text.matches("FILE").count(), 1);
+        assert!(
+            text.contains(
+                "REM DATA TRACK 02 SESSION 2 START 26400 LENGTH 20000 \"not ripped (computer data)\"\r\n"
+            ),
+            "{text}"
+        );
+        // Header lines come before the first FILE.
+        assert!(text.find("REM DATA TRACK").unwrap() < text.find("FILE").unwrap());
     }
 
     #[test]

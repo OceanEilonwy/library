@@ -18,6 +18,12 @@ pub struct Settings {
     pub read_mode: ReadMode,
     /// Keep a copy of each rip in this folder too.
     pub keep_local_copy: Option<PathBuf>,
+    /// How far, in samples either way, to look for another pressing when a
+    /// track does not match the databases at our own position; `None` for
+    /// the default ([`crate::core::pressing::DEFAULT_MAX_SHIFT`], 2,939),
+    /// `0` to not look. Not on the Settings screen; `pressingSearch` in
+    /// `settings.json`.
+    pub pressing_search: Option<u32>,
 }
 
 /// The config directory (`~/.config/library-rip` on Linux).
@@ -27,6 +33,12 @@ pub fn config_dir() -> Option<PathBuf> {
 }
 
 impl Settings {
+    /// The pressing search window in samples.
+    pub fn pressing_search(&self) -> u32 {
+        self.pressing_search
+            .unwrap_or(crate::core::pressing::DEFAULT_MAX_SHIFT)
+    }
+
     /// Loads settings from `path`; a missing file gives the defaults.
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
@@ -69,6 +81,7 @@ mod tests {
             read_offset: Some(SampleOffset(6)),
             read_mode: ReadMode::TestAndCopy,
             keep_local_copy: None,
+            pressing_search: Some(100),
         };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), settings);

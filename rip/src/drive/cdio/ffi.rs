@@ -52,6 +52,12 @@ struct CdText {
     _private: [u8; 0],
 }
 
+/// `mmc_cdb_t`: a SCSI command descriptor block.
+#[repr(C)]
+struct MmcCdb {
+    field: [u8; MAX_CDB_LEN],
+}
+
 /// `cdio_hwinfo_t` (lengths 8, 16 and 4 plus a terminating NUL).
 #[repr(C)]
 struct HwInfo {
@@ -72,6 +78,19 @@ const LEADOUT_TRACK: u8 = 0xAA;
 const INVALID_TRACK: u8 = 0xFF;
 /// `CDIO_INVALID_LSN`.
 const INVALID_LSN: i32 = -45_301;
+/// `MAX_CDB_LEN`: bytes in an `mmc_cdb_t`.
+const MAX_CDB_LEN: usize = 12;
+/// `cdio_mmc_direction_t::SCSI_MMC_DATA_READ`.
+const SCSI_MMC_DATA_READ: c_int = 0;
+/// `CDIO_MMC_GPCMD_READ_TOC`.
+const MMC_READ_TOC: u8 = 0x43;
+/// `CDIO_MMC_READTOC_FMT_FULTOC`: the full TOC, with sessions.
+const MMC_READTOC_FULL_TOC: u8 = 2;
+/// How long the drive may take to answer READ TOC.
+const MMC_TIMEOUT_MS: u32 = 10_000;
+/// Bytes asked for: the 4-byte header and 11 bytes per descriptor, enough
+/// for 99 tracks and the A0–A2 points of several sessions.
+const FULL_TOC_BYTES: u16 = 4 + 11 * 140;
 /// `CDDA_MESSAGE_FORGETIT`.
 const CDDA_MESSAGE_FORGETIT: c_int = 0;
 /// `PARANOIA_MODE_FULL`: verify, overlap, scratch repair, never skip.
@@ -127,6 +146,15 @@ unsafe extern "C" {
     fn cdio_get_cdtext(cdio: *mut CdIo) -> *mut CdText;
     fn cdtext_get_const(cdtext: *const CdText, field: c_int, track: u8) -> *const c_char;
     fn cdio_free(memory: *mut c_void);
+    fn cdio_get_last_session(cdio: *mut CdIo, last_session: *mut i32) -> c_int;
+    fn mmc_run_cmd(
+        cdio: *const CdIo,
+        timeout_ms: u32,
+        cdb: *const MmcCdb,
+        direction: c_int,
+        buffer_length: u32,
+        buffer: *mut c_void,
+    ) -> c_int;
 
     fn cdio_cddap_identify_cdio(
         cdio: *mut CdIo,
@@ -408,6 +436,57 @@ impl Device {
             return Err("the drive gave no lead-out position".into());
         }
         Ok(Some((tracks, lead_out)))
+    }
+
+    /// The start (LSN) of the first track of the last session, as libcdio
+    /// reports it (`cdio_get_last_session`); `None` when the drive cannot
+    /// tell.
+    pub fn last_session_start(&self) -> Option<i32> {
+        let cdio = self.handle().ok()?;
+        let mut lsn: i32 = INVALID_LSN;
+        // SAFETY: live handle; `lsn` is a valid out-parameter.
+        let status = unsafe { cdio_get_last_session(cdio.as_ptr(), &mut lsn) };
+        (status == DRIVER_OP_SUCCESS && lsn != INVALID_LSN).then_some(lsn)
+    }
+
+    /// The raw answer to MMC READ TOC/PMA/ATIP in full-TOC format (format
+    /// 2, from session 1), or `None` when the drive refuses it. Parsed by
+    /// the caller.
+    pub fn full_toc(&self) -> Option<Vec<u8>> {
+        let cdio = self.handle().ok()?;
+        let [length_high, length_low] = FULL_TOC_BYTES.to_be_bytes();
+        let mut cdb = MmcCdb {
+            field: [0; MAX_CDB_LEN],
+        };
+        // READ TOC: MSF addresses, format 2, starting with session 1.
+        cdb.field = [
+            MMC_READ_TOC,
+            0x02,
+            MMC_READTOC_FULL_TOC,
+            0,
+            0,
+            0,
+            1,
+            length_high,
+            length_low,
+            0,
+            0,
+            0,
+        ];
+        let mut buffer = vec![0u8; usize::from(FULL_TOC_BYTES)];
+        // SAFETY: live handle; `cdb` is a valid CDB; `buffer` is writable
+        // for exactly the length passed.
+        let status = unsafe {
+            mmc_run_cmd(
+                cdio.as_ptr(),
+                MMC_TIMEOUT_MS,
+                &cdb,
+                SCSI_MMC_DATA_READ,
+                u32::from(FULL_TOC_BYTES),
+                buffer.as_mut_ptr().cast::<c_void>(),
+            )
+        };
+        (status == DRIVER_OP_SUCCESS).then_some(buffer)
     }
 
     /// The media catalogue number, unchecked.

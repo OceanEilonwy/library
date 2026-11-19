@@ -9,6 +9,13 @@
 //! "Accurately ripped" and a wrong one (bad offset, read errors) as a
 //! mismatch, just as with the real services.
 //!
+//! [`MockOptions::pressings`] says which pressings the databases know: by
+//! default only this one (pressing offset `+0`). A pressing at offset `+k`
+//! gets the checksums of the same audio placed `k` samples later on its
+//! disc (its track sample `i` is our disc sample `start + i + k`, silence
+//! beyond our audio), as another pressing's rippers would have sent, so a
+//! perfect rip matches it only through the pressing search.
+//!
 //! Used by the end-to-end tests and by `library-rip mock-services DIR`
 //! (testsupport feature), which prints the `LIBRARY_RIP_*_URL` variables
 //! that point the ripper here.
@@ -25,10 +32,11 @@ use serde_json::{Value, json};
 use url::Url;
 
 use crate::app::pipeline::Endpoints;
-use crate::core::accuraterip::{TrackPosition, database_file_name, track_crcs};
+use crate::core::accuraterip::database_file_name;
+use crate::core::pressing::{DiscAudio, crcs_at_shifts};
 use crate::core::{CoreError, ctdb, discid};
 use crate::fakedisc::{FakeDisc, FakeDiscError};
-use crate::model::{AccurateRipDiscId, Toc};
+use crate::model::{AccurateRipDiscId, Pcm, Samples, Toc};
 
 /// The album the mock MusicBrainz reports for the disc.
 pub const ALBUM_TITLE: &str = "Sine Tones";
@@ -49,6 +57,36 @@ pub const CTDB_CONFIDENCE: u32 = 7;
 
 /// The front cover served by the mock Cover Art Archive (a PNG).
 pub const COVER_PNG: &[u8] = include_bytes!("../ui/icons/library-rip-256.png");
+
+/// One pressing the mock databases know.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct MockPressing {
+    /// Its pressing offset in samples (`0` for the simulated disc itself).
+    pub offset: i32,
+    /// The AccurateRip confidence of its v2 checksums (its v1 checksums get
+    /// 3, as a second, older entry).
+    pub confidence: u8,
+}
+
+/// What the mock databases hold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MockOptions {
+    /// The pressings AccurateRip and CTDB know, in database order.
+    pub pressings: Vec<MockPressing>,
+}
+
+impl Default for MockOptions {
+    /// Only the simulated disc's own pressing, with confidence
+    /// [`ACCURATERIP_CONFIDENCE`].
+    fn default() -> Self {
+        MockOptions {
+            pressings: vec![MockPressing {
+                offset: 0,
+                confidence: ACCURATERIP_CONFIDENCE,
+            }],
+        }
+    }
+}
 
 /// Problems starting the mock services.
 #[derive(Debug, thiserror::Error)]
@@ -146,12 +184,21 @@ impl Drop for MockServices {
 }
 
 /// Starts the mock services for the simulated disc in `disc_dir` on
-/// `listener`.
+/// `listener`, knowing only the disc's own pressing.
 pub async fn start(
     disc_dir: &Path,
     listener: tokio::net::TcpListener,
 ) -> Result<MockServices, MockError> {
-    let answers = Arc::new(answers(disc_dir)?);
+    start_with(disc_dir, listener, &MockOptions::default()).await
+}
+
+/// Starts the mock services with the pressings in `options`.
+pub async fn start_with(
+    disc_dir: &Path,
+    listener: tokio::net::TcpListener,
+    options: &MockOptions,
+) -> Result<MockServices, MockError> {
+    let answers = Arc::new(answers(disc_dir, options)?);
     let address = listener
         .local_addr()
         .map_err(|e| MockError::Address(e.to_string()))?;
@@ -191,39 +238,60 @@ pub async fn start(
     })
 }
 
-fn answers(disc_dir: &Path) -> Result<Answers, MockError> {
+fn answers(disc_dir: &Path, options: &MockOptions) -> Result<Answers, MockError> {
     let disc = FakeDisc::load(disc_dir)?;
     let toc = &disc.spec.toc;
     let mut pcm = Vec::new();
     for track in toc.audio_tracks() {
         let path = disc.track_path(track.number);
         let bytes = std::fs::read(&path).map_err(|source| MockError::Io { path, source })?;
-        pcm.push(bytes);
+        pcm.push((Pcm::Memory(bytes.into()), track.length_sectors.samples()));
     }
     let count = pcm.len();
+    let tracks: Vec<(&Pcm, Samples)> = pcm.iter().map(|(p, s)| (p, *s)).collect();
+    let mut audio = DiscAudio::new(&tracks)?;
 
-    // AccurateRip: two entries, as the real database often has: one with
-    // the v2 checksums and one with the v1 checksums.
+    // AccurateRip: two entries per pressing, as the real database often
+    // has: one with the v2 checksums and one with the v1 checksums.
     let accuraterip_id = discid::accuraterip_disc_id(toc)?;
     let mut header = vec![accuraterip_id.track_count];
     header.extend_from_slice(&accuraterip_id.id1.to_le_bytes());
     header.extend_from_slice(&accuraterip_id.id2.to_le_bytes());
     header.extend_from_slice(&accuraterip_id.cddb.to_le_bytes());
-    let mut crcs = Vec::with_capacity(count);
-    for (index, track) in pcm.iter().enumerate() {
-        let position = TrackPosition::for_track(index, count)
-            .ok_or_else(|| CoreError::Invalid("track out of range".into()))?;
-        crcs.push(track_crcs(track, position)?);
-    }
     let mut dbar = Vec::new();
-    for (confidence, version_two) in [(ACCURATERIP_CONFIDENCE, true), (3, false)] {
-        dbar.extend_from_slice(&header);
-        for crc in &crcs {
-            dbar.push(confidence);
-            let value = if version_two { crc.v2.0 } else { crc.v1.0 };
-            dbar.extend_from_slice(&value.to_le_bytes());
-            dbar.extend_from_slice(&0u32.to_le_bytes());
+    let mut ctdb_entries = String::new();
+    let edge = i64::try_from(ctdb::EDGE_SAMPLES).unwrap_or(0);
+    let total = i64::try_from(audio.total_samples()).unwrap_or(0);
+    for (id, pressing) in (1..).zip(&options.pressings) {
+        let shift = i64::from(pressing.offset);
+        let mut crcs = Vec::with_capacity(count);
+        for index in 0..count {
+            let at = crcs_at_shifts(&mut audio, index, &[shift])?;
+            crcs.push(
+                at.first()
+                    .copied()
+                    .ok_or_else(|| CoreError::Invalid("no checksum was worked out".into()))?,
+            );
         }
+        for (confidence, version_two) in [(pressing.confidence, true), (3, false)] {
+            dbar.extend_from_slice(&header);
+            for crc in &crcs {
+                dbar.push(confidence);
+                let value = if version_two { crc.v2.0 } else { crc.v1.0 };
+                dbar.extend_from_slice(&value.to_le_bytes());
+                dbar.extend_from_slice(&0u32.to_le_bytes());
+            }
+        }
+        // CTDB: the whole-disc CRC of this pressing.
+        let window = usize::try_from(total - 2 * edge).unwrap_or(0);
+        let mut bytes = vec![0u8; window * 4];
+        audio.read_bytes(edge + shift, &mut bytes)?;
+        let crc = crc32fast::hash(&bytes);
+        ctdb_entries.push_str(&format!(
+            "  <entry confidence=\"{CTDB_CONFIDENCE}\" crc32=\"{crc:08x}\" id=\"{id}\" npar=\"8\" stride=\"5880\" \
+             toc=\"{}\" trackcrcs=\"\" />\n",
+            discid::ctdb_toc_id(toc)?
+        ));
     }
 
     // The drive offset list: the simulated drive at its true offset.
@@ -238,15 +306,9 @@ fn answers(disc_dir: &Path) -> Result<Answers, MockError> {
     record.extend_from_slice(&42u32.to_le_bytes());
     record.resize(69, 0);
 
-    // CTDB: the whole-disc CRC.
-    let slices: Vec<&[u8]> = pcm.iter().map(Vec::as_slice).collect();
-    let crc = ctdb::disc_crc(&slices, toc)?;
     let ctdb_xml = format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
-         <ctdb xmlns=\"http://db.cuetools.net/ns/mmd-1.0#\">\n  \
-         <entry confidence=\"{CTDB_CONFIDENCE}\" crc32=\"{crc:08x}\" id=\"1\" npar=\"8\" stride=\"5880\" \
-         toc=\"{}\" trackcrcs=\"\" />\n</ctdb>\n",
-        discid::ctdb_toc_id(toc)?
+         <ctdb xmlns=\"http://db.cuetools.net/ns/mmd-1.0#\">\n{ctdb_entries}</ctdb>\n"
     );
 
     let disc_id = discid::musicbrainz_disc_id(toc)?;
@@ -387,10 +449,79 @@ async fn ctdb_lookup(
 mod tests {
     use super::*;
     use crate::core::SERVICE_TIMEOUT;
-    use crate::core::accuraterip::{fetch_database, verify};
+    use crate::core::accuraterip::{TrackPosition, fetch_database, track_crcs, verify};
     use crate::core::offset::{fetch_drive_database, find_offset};
     use crate::model::{AccurateRipStatus, CtdbStatus, SampleOffset, TrackNumber};
     use crate::testsupport::{FakeDiscOptions, make_fake_disc};
+
+    #[tokio::test]
+    async fn the_mock_can_know_only_another_pressing() {
+        use crate::core::pressing::verify_with_pressings;
+        use crate::model::{AccurateRipVersion, Pcm, Samples};
+        let temp = tempfile::tempdir().unwrap();
+        let disc = make_fake_disc(
+            temp.path(),
+            &FakeDiscOptions {
+                tracks: 3,
+                seconds: 2,
+                read_offset: SampleOffset(0),
+                errors: Vec::new(),
+                enhanced: true,
+            },
+        )
+        .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let options = MockOptions {
+            pressings: vec![MockPressing {
+                offset: 102,
+                confidence: 9,
+            }],
+        };
+        let mock = start_with(temp.path(), listener, &options).await.unwrap();
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let toc = &disc.spec.toc;
+        let id = discid::accuraterip_disc_id(toc).unwrap();
+        assert_eq!(id.track_count, 3, "the data track is not counted");
+        let entries = fetch_database(&http, &mock.endpoints.accuraterip, &id, SERVICE_TIMEOUT)
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 2);
+        let pcm: Vec<(Pcm, Samples)> = toc
+            .audio_tracks()
+            .map(|t| {
+                (
+                    Pcm::File(disc.track_path(t.number)),
+                    t.length_sectors.samples(),
+                )
+            })
+            .collect();
+        let mut ours = Vec::new();
+        for (index, track) in toc.audio_tracks().enumerate() {
+            let bytes = std::fs::read(disc.track_path(track.number)).unwrap();
+            let position = TrackPosition::for_track(index, 3).unwrap();
+            ours.push((track.number, track_crcs(&bytes, position).unwrap()));
+        }
+        let here = verify(&ours, &entries);
+        assert!(here.iter().all(|(_, s)| !s.is_accurate()), "{here:?}");
+        let refs: Vec<(&Pcm, Samples)> = pcm.iter().map(|(p, s)| (p, *s)).collect();
+        let mut audio = DiscAudio::new(&refs).unwrap();
+        let found = verify_with_pressings(&mut audio, here, &entries, 2939).unwrap();
+        for (_, status) in found {
+            assert_eq!(
+                status,
+                AccurateRipStatus::Accurate {
+                    version: AccurateRipVersion::V2,
+                    confidence: 9,
+                    pressing_offset: SampleOffset(102),
+                }
+            );
+        }
+        // CTDB has that pressing too.
+        let found = ctdb::lookup(&http, &mock.endpoints.ctdb, toc, SERVICE_TIMEOUT)
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 1);
+    }
 
     #[test]
     fn tracks_are_named_after_their_tones() {
@@ -410,6 +541,7 @@ mod tests {
                 seconds: 2,
                 read_offset: SampleOffset(30),
                 errors: Vec::new(),
+                enhanced: false,
             },
         )
         .unwrap();

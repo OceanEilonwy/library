@@ -193,6 +193,7 @@ pub async fn run_with_browser(
         read_offset: options.offset,
         read_mode: options.read_mode,
         keep_local_copy: options.keep.clone(),
+        pressing_search: None,
     };
     let backend = LiveBackend::new(LiveConfig {
         endpoints: options.endpoints.clone(),
@@ -243,6 +244,12 @@ async fn flow(
         super::view::duration(disc.toc.audio_duration_ms()),
         disc.drive
     ));
+    for data in disc.toc.data_tracks() {
+        report(&format!(
+            "Data track {} in session {} (not ripped).",
+            data.number, data.session
+        ));
+    }
 
     // 3. Identify.
     let release = identify(backend, &disc, report).await;
@@ -263,6 +270,10 @@ async fn flow(
     for issue in &read_issues {
         report(issue);
     }
+    report(&format!(
+        "Verdict: {}",
+        crate::core::log::summary(&output.report)
+    ));
     if !read_issues.is_empty() && !options.upload_with_errors {
         return Err(HeadlessError::ReadErrors {
             issues: read_issues,

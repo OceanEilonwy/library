@@ -245,6 +245,7 @@ fn disc(dir: &Path, errors: Vec<InjectedError>) {
             seconds: 2,
             read_offset: SampleOffset(6),
             errors,
+            enhanced: false,
         },
     )
     .unwrap();

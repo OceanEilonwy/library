@@ -4,6 +4,8 @@
 //! - [`discid`]: MusicBrainz, freedb, AccurateRip and CTDB ids from a TOC.
 //! - [`accuraterip`]: v1/v2 track checksums and the `dBAR` database.
 //! - [`ctdb`]: CUETools database lookup and comparison.
+//! - [`pressing`]: matching other pressings (AccurateRip and CTDB checksums
+//!   over a window of sample shifts, streamed from the track files).
 //! - [`offset`]: AccurateRip drive offset database and sample-exact shifting.
 //! - [`cue`]: cue sheet.
 //! - [`log`]: the human-readable rip log.
@@ -18,6 +20,7 @@ pub mod cue;
 pub mod discid;
 pub mod log;
 pub mod offset;
+pub mod pressing;
 pub mod report_json;
 
 use std::time::Duration;
@@ -46,6 +49,14 @@ pub enum CoreError {
     /// JSON encoding failed.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    /// A ripped track's audio file could not be read back.
+    #[error("could not read {path}: {source}")]
+    Io {
+        /// The file.
+        path: std::path::PathBuf,
+        /// The underlying error.
+        source: std::io::Error,
+    },
 }
 
 /// Result type of the `core` module.

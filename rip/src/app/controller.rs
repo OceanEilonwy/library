@@ -427,6 +427,7 @@ mod tests {
                     is_audio: true,
                     pregap: Sectors(0),
                     isrc: None,
+                    session: crate::model::SessionNumber::FIRST,
                 }],
                 Lba(750),
             )
@@ -465,6 +466,7 @@ mod tests {
                 release: job.release.clone(),
                 tracks: Vec::new(),
                 ctdb: crate::model::CtdbStatus::NotInDatabase,
+                verdict: crate::model::DiscVerdict::default(),
             },
             plan: UploadPlan {
                 item: job.target.clone(),

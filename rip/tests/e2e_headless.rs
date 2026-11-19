@@ -15,6 +15,10 @@
 //!    ripper's own key) and the Player API (with an account made by
 //!    `library create-account`).
 //!
+//! A second test rips an enhanced CD (audio session, then a data session)
+//! and then a disc the mock databases know only from another pressing (one
+//! whose audio sits 102 samples later), through the same real server.
+//!
 //! The server build can take a few minutes the first time. Set
 //! `LIBRARY_SERVER_BIN` to use a server binary you already built, or
 //! `LIBRARY_RIP_SKIP_E2E=1` to skip. If the server cannot be built (or
@@ -29,8 +33,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use library_rip::fakedisc::{InjectedError, InjectedErrorKind};
-use library_rip::mockservices;
-use library_rip::model::{Lba, SampleOffset};
+use library_rip::mockservices::{self, MockOptions, MockPressing};
+use library_rip::model::{DiscVerdict, Lba, SampleOffset};
 use library_rip::testsupport::{FakeDiscOptions, make_fake_disc};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -446,6 +450,7 @@ async fn headless_rip_reaches_the_real_library() {
                     kind: InjectedErrorKind::FlakyOnce,
                 },
             ],
+            enhanced: false,
         },
     )
     .unwrap();
@@ -734,4 +739,283 @@ async fn headless_rip_reaches_the_real_library() {
 
     drop(mock);
     drop(server);
+}
+
+/// The library server running on a free port with a fresh data folder.
+struct Library {
+    server: Running,
+    base: String,
+}
+
+async fn start_library(temp: &Path) -> Library {
+    let server_bin = server_binary().unwrap_or_else(|why| {
+        panic!(
+            "e2e: the library server is not available (set LIBRARY_RIP_SKIP_E2E=1 to skip this test): {why}"
+        )
+    });
+    let data = temp.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let port = free_port();
+    let base = format!("http://127.0.0.1:{port}");
+    let config = write_config(temp, port, &data);
+    let mut server = Running(
+        Command::new(&server_bin)
+            .arg("--config")
+            .arg(&config)
+            .arg("serve")
+            .env("RUST_LOG", "warn")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait_for_server(&base, &mut server).await;
+    Library { server, base }
+}
+
+/// For each item matching `title_query`: its audio files as (track, media id).
+async fn audio_tracks(base: &str, key: &str, title_query: &str) -> Vec<Vec<(i64, i64)>> {
+    let client = http();
+    let bearer = format!("Bearer {key}");
+    let found: Value = client
+        .get(format!("{base}/api/rip/items"))
+        .query(&[("q", title_query), ("type", "music")])
+        .header("authorization", &bearer)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let mut out = Vec::new();
+    for item in found.as_array().unwrap() {
+        let id = item["id"].as_i64().unwrap();
+        let media: Value = client
+            .get(format!("{base}/api/rip/items/{id}/media"))
+            .header("authorization", &bearer)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        out.push(
+            media
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|m| m["kind"] == "audio")
+                .map(|m| (m["track"].as_i64().unwrap(), m["id"].as_i64().unwrap()))
+                .collect(),
+        );
+    }
+    out
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn enhanced_cd_and_another_pressing_reach_the_real_library() {
+    if std::env::var_os("LIBRARY_RIP_SKIP_E2E").is_some() {
+        eprintln!("e2e: skipped (LIBRARY_RIP_SKIP_E2E is set)");
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let library = start_library(temp.path()).await;
+    let base = library.base.clone();
+    let session = unlock(&base).await;
+    let key_file = temp.path().join("connection.json");
+
+    // 1. An enhanced CD: three audio tracks, the 11,400-sector gap and a
+    //    data track in session 2, which the simulated drive refuses to
+    //    read. The databases know this pressing.
+    let disc_dir = temp.path().join("enhanced");
+    let disc = make_fake_disc(
+        &disc_dir,
+        &FakeDiscOptions {
+            tracks: 3,
+            seconds: SECONDS_PER_TRACK,
+            read_offset: SampleOffset(6),
+            errors: Vec::new(),
+            enhanced: true,
+        },
+    )
+    .unwrap();
+    let toc = disc.spec.toc.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mock = mockservices::start(&disc_dir, listener).await.unwrap();
+    let keep = temp.path().join("keep-enhanced");
+    let mut ripper = Ripper::start(
+        &[
+            "--library".as_ref(),
+            base.as_ref(),
+            "--device-code".as_ref(),
+            "--fake-disc".as_ref(),
+            disc_dir.as_os_str(),
+            "--key-file".as_ref(),
+            key_file.as_os_str(),
+            "--keep".as_ref(),
+            keep.as_os_str(),
+        ],
+        &mock,
+        temp.path(),
+    );
+    let code = ripper.wait_for(device_code);
+    approve_device_code(&base, &session, &code).await;
+    let text = ripper.finish().await;
+    assert!(
+        text.contains("Disc: 3 audio tracks, 0:12"),
+        "only the audio counts:\n{text}"
+    );
+    assert!(
+        text.contains("Data track 04 in session 2 (not ripped)."),
+        "{text}"
+    );
+    for track in 1..=3 {
+        assert!(
+            text.contains(&format!("Track {track}: read without errors.")),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "Track {track}: AccurateRip: Accurately ripped (confidence 12)\n"
+            )),
+            "{text}"
+        );
+    }
+    assert!(
+        text.contains("CUETools database: Accurately ripped (confidence 7 of 7)\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Verdict: All tracks accurately ripped."),
+        "{text}"
+    );
+    assert!(text.contains("Done: 6 files uploaded"), "{text}");
+
+    let kept = keep.join("The Test Card").join("Sine Tones");
+    let report = library_rip::core::report_json::parse(
+        &std::fs::read_to_string(kept.join("rip.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(report.toc, toc);
+    assert_eq!(report.tracks.len(), 3, "the data track is not ripped");
+    assert_eq!(
+        report.disc_ids,
+        library_rip::core::discid::disc_ids(&toc).unwrap()
+    );
+    assert_eq!(report.disc_ids.accuraterip.track_count, 3);
+    assert_eq!(
+        report.verdict,
+        DiscVerdict::Accurate {
+            other_pressing_offsets: Vec::new()
+        }
+    );
+    // The last audio track ends with the audio session, not at the data.
+    let sectors = SECONDS_PER_TRACK * 75;
+    assert_eq!(report.tracks[2].length_sectors.0, sectors);
+    let log = std::fs::read_to_string(kept.join("The Test Card - Sine Tones.log")).unwrap();
+    assert!(log.contains("\nData track 04 (not ripped)\n"), "{log}");
+    assert!(log.contains("Enhanced CD (CD-Extra)"), "{log}");
+    let cue = std::fs::read_to_string(kept.join("The Test Card - Sine Tones.cue")).unwrap();
+    assert!(
+        cue.contains(&format!(
+            "REM DATA TRACK 04 SESSION 2 START {} LENGTH 1500",
+            3 * sectors + 11_400
+        )),
+        "{cue}"
+    );
+    assert_eq!(cue.matches("FILE ").count(), 3, "{cue}");
+    drop(mock);
+
+    // The library has three audio tracks of the right length.
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&key_file).unwrap()).unwrap();
+    let key = saved["apiKey"].as_str().unwrap().to_owned();
+    let items = audio_tracks(&base, &key, "Sine Tones").await;
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].iter().map(|(track, _)| *track).collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+
+    // 2. A disc the databases know only from another pressing, whose audio
+    //    sits 102 samples later. The saved connection needs no approval.
+    let shifted_dir = temp.path().join("shifted");
+    make_fake_disc(
+        &shifted_dir,
+        &FakeDiscOptions {
+            tracks: 3,
+            seconds: SECONDS_PER_TRACK,
+            read_offset: SampleOffset(6),
+            errors: Vec::new(),
+            enhanced: false,
+        },
+    )
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mock = mockservices::start_with(
+        &shifted_dir,
+        listener,
+        &MockOptions {
+            pressings: vec![MockPressing {
+                offset: 102,
+                confidence: mockservices::ACCURATERIP_CONFIDENCE,
+            }],
+        },
+    )
+    .await
+    .unwrap();
+    let keep = temp.path().join("keep-shifted");
+    let ripper = Ripper::start(
+        &[
+            "--library".as_ref(),
+            base.as_ref(),
+            "--fake-disc".as_ref(),
+            shifted_dir.as_os_str(),
+            "--key-file".as_ref(),
+            key_file.as_os_str(),
+            "--keep".as_ref(),
+            keep.as_os_str(),
+        ],
+        &mock,
+        temp.path(),
+    );
+    let text = ripper.finish().await;
+    for track in 1..=3 {
+        assert!(
+            text.contains(&format!(
+                "Track {track}: AccurateRip: Accurately ripped (confidence 12, pressing offset +102)"
+            )),
+            "{text}"
+        );
+    }
+    assert!(
+        text.contains(
+            "CUETools database: Accurately ripped (confidence 7 of 7, pressing offset +102)"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("Verdict: All tracks accurately ripped. The database's matching rips are of another pressing of this album (pressing offset +102)"),
+        "{text}"
+    );
+    assert!(text.contains("Done: 6 files uploaded"), "{text}");
+    let kept = keep.join("The Test Card").join("Sine Tones");
+    let report = library_rip::core::report_json::parse(
+        &std::fs::read_to_string(kept.join("rip.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        report.verdict,
+        DiscVerdict::Accurate {
+            other_pressing_offsets: vec![SampleOffset(102)]
+        }
+    );
+    let log = std::fs::read_to_string(kept.join("The Test Card - Sine Tones.log")).unwrap();
+    assert!(
+        log.contains("Accurately ripped (confidence 12, pressing offset +102, v2 checksum)"),
+        "{log}"
+    );
+    assert!(log.contains("so this is still an exact copy"), "{log}");
+    assert_eq!(audio_tracks(&base, &key, "Sine Tones").await.len(), 2);
+
+    drop(mock);
+    drop(library.server);
 }

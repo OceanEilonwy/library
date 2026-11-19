@@ -31,6 +31,13 @@ pub const SAMPLE_RATE: u32 = 44_100;
 pub const BYTES_PER_SAMPLE: usize = 4;
 /// Sectors between MSF 00:00:00 and LBA 0 (the two-second lead-in offset).
 pub const MSF_OFFSET_SECTORS: u32 = 150;
+/// Sectors between the end of the audio session and the start of the data
+/// track on an enhanced CD (Blue Book / CD-Extra): the first session's
+/// lead-out (6,750 sectors, 90 s), the second session's lead-in (4,500,
+/// 60 s) and the data track's pre-gap (150, 2 s). None of it can be read as
+/// audio. libdiscid, whipper and CUETools all use this figure when the drive
+/// does not report the session's own lead-out.
+pub const SESSION_GAP_SECTORS: u32 = 11_400;
 
 // ---------------------------------------------------------------------------
 // Positions and quantities
@@ -216,6 +223,61 @@ impl From<TrackNumber> for u8 {
 impl fmt::Display for TrackNumber {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:02}", self.0)
+    }
+}
+
+/// A session number, 1–99. Audio CDs have one session; an enhanced CD
+/// (CD-Extra) has its audio in session 1 and a data track in session 2.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "u8", into = "u8")]
+pub struct SessionNumber(u8);
+
+impl SessionNumber {
+    /// Session 1, where every audio CD's music is.
+    pub const FIRST: SessionNumber = SessionNumber(1);
+
+    /// Validates a session number (1–99).
+    pub fn new(number: u8) -> Result<Self, ModelError> {
+        if (1..=99).contains(&number) {
+            Ok(SessionNumber(number))
+        } else {
+            Err(ModelError::SessionNumber(number))
+        }
+    }
+
+    /// The number as a plain integer.
+    pub fn get(self) -> u8 {
+        self.0
+    }
+
+    /// The session after this one, if there can be one.
+    pub fn next(self) -> Option<SessionNumber> {
+        SessionNumber::new(self.0.checked_add(1)?).ok()
+    }
+}
+
+impl Default for SessionNumber {
+    fn default() -> Self {
+        SessionNumber::FIRST
+    }
+}
+
+impl TryFrom<u8> for SessionNumber {
+    type Error = ModelError;
+    fn try_from(number: u8) -> Result<Self, ModelError> {
+        SessionNumber::new(number)
+    }
+}
+
+impl From<SessionNumber> for u8 {
+    fn from(number: SessionNumber) -> u8 {
+        number.0
+    }
+}
+
+impl fmt::Display for SessionNumber {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -488,6 +550,9 @@ pub struct TrackEntry {
     pub start_lba: Lba,
     /// Length up to the next track's INDEX 01 (or the lead-out), so it
     /// includes the next track's pre-gap, matching how rippers split tracks.
+    /// The last track of a session ends at that session's lead-out: on an
+    /// enhanced CD the last audio track stops where the audio session does,
+    /// not at the data track (the gap between sessions is no track's).
     pub length_sectors: Sectors,
     /// Audio track (`false` for data tracks of enhanced/mixed-mode discs,
     /// which are never ripped as audio).
@@ -499,6 +564,10 @@ pub struct TrackEntry {
     /// The track's ISRC, when the drive reports one.
     #[serde(default)]
     pub isrc: Option<Isrc>,
+    /// The session the track is in (1 unless the disc has several; absent
+    /// in files written before sessions were recorded, read as 1).
+    #[serde(default)]
+    pub session: SessionNumber,
 }
 
 impl TrackEntry {
@@ -508,8 +577,28 @@ impl TrackEntry {
     }
 }
 
+/// How audio and data tracks are arranged on a disc.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DiscLayout {
+    /// Audio tracks only (a Red Book audio CD).
+    Audio,
+    /// Audio first, then data tracks (CD-Extra / Blue Book "enhanced CD",
+    /// normally in a second session). The audio rips normally; the data is
+    /// left alone.
+    Enhanced,
+    /// A data track before (or between) audio tracks ("mixed mode", e.g.
+    /// game and CD-ROM discs with music after the program). Not ripped.
+    MixedMode,
+    /// No audio tracks at all.
+    NoAudio,
+}
+
 /// A validated table of contents: tracks in order, numbered consecutively,
-/// non-overlapping, ending at the lead-out.
+/// non-overlapping, ending at the lead-out. Within a session each track
+/// starts where the previous one ends; between sessions there is a gap
+/// (the earlier session's lead-out and the next one's lead-in), which
+/// belongs to no track.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "TocParts", into = "TocParts")]
 pub struct Toc {
@@ -529,14 +618,22 @@ pub struct TocParts {
 
 impl Toc {
     /// Validates the track list: at least one track, consecutive numbers,
-    /// each track starting where the previous one ends and the last one
-    /// ending at `lead_out`.
+    /// sessions that start at 1 and go up one at a time, each track
+    /// starting where the previous one ends (or, at the start of a new
+    /// session, after it) and the last one ending at `lead_out`.
     pub fn new(tracks: Vec<TrackEntry>, lead_out: Lba) -> Result<Self, ModelError> {
         let Some(first) = tracks.first() else {
             return Err(ModelError::Toc("the disc has no tracks".into()));
         };
+        if first.session != SessionNumber::FIRST {
+            return Err(ModelError::Toc(format!(
+                "track {} is in session {} but the disc starts with session 1",
+                first.number, first.session
+            )));
+        }
         let mut expected_number = first.number.get();
         let mut expected_start = first.start_lba;
+        let mut session = first.session;
         for track in &tracks {
             if track.number.get() != expected_number {
                 return Err(ModelError::Toc(format!(
@@ -545,10 +642,25 @@ impl Toc {
                     expected_number.saturating_sub(1)
                 )));
             }
-            if track.start_lba != expected_start {
+            if track.session == session {
+                if track.start_lba != expected_start {
+                    return Err(ModelError::Toc(format!(
+                        "track {} starts at sector {} but the previous track ends at {}",
+                        track.number, track.start_lba, expected_start
+                    )));
+                }
+            } else if Some(track.session) == session.next() {
+                if track.start_lba <= expected_start {
+                    return Err(ModelError::Toc(format!(
+                        "track {} starts session {} at sector {}, but session {} runs to sector {}",
+                        track.number, track.session, track.start_lba, session, expected_start
+                    )));
+                }
+                session = track.session;
+            } else {
                 return Err(ModelError::Toc(format!(
-                    "track {} starts at sector {} but the previous track ends at {}",
-                    track.number, track.start_lba, expected_start
+                    "track {} is in session {} after a track in session {}",
+                    track.number, track.session, session
                 )));
             }
             if track.length_sectors.0 == 0 {
@@ -567,6 +679,51 @@ impl Toc {
         Ok(Toc { tracks, lead_out })
     }
 
+    /// Builds a TOC from a drive's flat listing, where every track runs to
+    /// the next one's start and the session of each track is unknown (all
+    /// are given as session 1). Data tracks after the last audio track are
+    /// taken to be the second session of an enhanced CD, as libdiscid and
+    /// whipper assume: they move to session 2 and the last audio track ends
+    /// [`SESSION_GAP_SECTORS`] before the first of them. Any other listing
+    /// is validated as it is.
+    pub fn new_assuming_enhanced_gap(
+        mut tracks: Vec<TrackEntry>,
+        lead_out: Lba,
+    ) -> Result<Self, ModelError> {
+        let last_audio = tracks.iter().rposition(|t| t.is_audio);
+        if let Some(last_audio) = last_audio
+            && last_audio + 1 < tracks.len()
+            && tracks.iter().all(|t| t.session == SessionNumber::FIRST)
+        {
+            let second = SessionNumber::FIRST
+                .next()
+                .ok_or_else(|| ModelError::Toc("no second session".into()))?;
+            let data_start = tracks
+                .get(last_audio + 1)
+                .map(|t| t.start_lba)
+                .ok_or_else(|| ModelError::Toc("the data track is missing".into()))?;
+            for track in tracks.iter_mut().skip(last_audio + 1) {
+                track.session = second;
+            }
+            let audio = tracks
+                .get_mut(last_audio)
+                .ok_or_else(|| ModelError::Toc("the last audio track is missing".into()))?;
+            let audio_end = data_start.0.checked_sub(SESSION_GAP_SECTORS).ok_or_else(|| {
+                ModelError::Toc(format!(
+                    "the data track at sector {data_start} is too close to the start of the disc for an enhanced CD"
+                ))
+            })?;
+            let length = Lba(audio_end).sectors_since(audio.start_lba).ok_or_else(|| {
+                ModelError::Toc(format!(
+                    "track {} would end before it starts once the {SESSION_GAP_SECTORS}-sector gap before the data track is left out",
+                    audio.number
+                ))
+            })?;
+            audio.length_sectors = length;
+        }
+        Toc::new(tracks, lead_out)
+    }
+
     /// Tracks in disc order (never empty).
     pub fn tracks(&self) -> &[TrackEntry] {
         &self.tracks
@@ -575,6 +732,11 @@ impl Toc {
     /// Audio tracks only, in disc order.
     pub fn audio_tracks(&self) -> impl Iterator<Item = &TrackEntry> {
         self.tracks.iter().filter(|t| t.is_audio)
+    }
+
+    /// Data tracks only, in disc order (never ripped).
+    pub fn data_tracks(&self) -> impl Iterator<Item = &TrackEntry> {
+        self.tracks.iter().filter(|t| !t.is_audio)
     }
 
     /// The track with this number.
@@ -592,9 +754,44 @@ impl Toc {
         self.tracks.last()
     }
 
-    /// The lead-out position.
+    /// The lead-out position (of the last session).
     pub fn lead_out(&self) -> Lba {
         self.lead_out
+    }
+
+    /// The first sector after the last audio track: the end of the audio
+    /// that can be read. On an enhanced CD this is the audio session's
+    /// lead-out, well before the data track; `None` without audio tracks.
+    pub fn audio_end(&self) -> Option<Lba> {
+        self.audio_tracks().last().and_then(TrackEntry::end_lba)
+    }
+
+    /// How many sessions the disc has.
+    pub fn session_count(&self) -> u8 {
+        self.tracks.last().map_or(1, |t| t.session.get())
+    }
+
+    /// How audio and data are arranged.
+    pub fn layout(&self) -> DiscLayout {
+        let Some(first_audio) = self.tracks.iter().position(|t| t.is_audio) else {
+            return DiscLayout::NoAudio;
+        };
+        let last_audio = self
+            .tracks
+            .iter()
+            .rposition(|t| t.is_audio)
+            .unwrap_or(first_audio);
+        let data_among_audio = self
+            .tracks
+            .get(..=last_audio)
+            .is_some_and(|before| before.iter().any(|t| !t.is_audio));
+        if data_among_audio {
+            DiscLayout::MixedMode
+        } else if last_audio + 1 < self.tracks.len() {
+            DiscLayout::Enhanced
+        } else {
+            DiscLayout::Audio
+        }
     }
 
     /// Total playing time of the audio tracks in milliseconds.
@@ -881,6 +1078,13 @@ pub enum AccurateRipStatus {
         version: AccurateRipVersion,
         /// How many other rips agree.
         confidence: u32,
+        /// `+0` when the match is with rips of this very pressing. Otherwise
+        /// the match is with another pressing of the same album whose audio
+        /// sits this many samples later on its disc (earlier when negative):
+        /// the audio is identical, only positioned differently, so the rip
+        /// is still an exact copy. Absent in older reports, read as `+0`.
+        #[serde(default, rename = "pressingOffset")]
+        pressing_offset: SampleOffset,
     },
     /// The disc is in the database but this track's checksum is not.
     Mismatch {
@@ -897,11 +1101,23 @@ pub enum AccurateRipStatus {
 }
 
 impl AccurateRipStatus {
-    /// The phrase shown in the UI and log.
+    /// The phrase shown in the UI and log, e.g. "Accurately ripped
+    /// (confidence 8)" or "Accurately ripped (confidence 8, pressing offset
+    /// +102)".
     pub fn summary(&self) -> String {
         match self {
-            AccurateRipStatus::Accurate { confidence, .. } => {
-                format!("Accurately ripped (confidence {confidence})")
+            AccurateRipStatus::Accurate {
+                confidence,
+                pressing_offset,
+                ..
+            } => {
+                if pressing_offset.0 == 0 {
+                    format!("Accurately ripped (confidence {confidence})")
+                } else {
+                    format!(
+                        "Accurately ripped (confidence {confidence}, pressing offset {pressing_offset})"
+                    )
+                }
             }
             AccurateRipStatus::Mismatch { .. } => "Mismatch".to_owned(),
             AccurateRipStatus::NotInDatabase => "Not in database".to_owned(),
@@ -909,6 +1125,11 @@ impl AccurateRipStatus {
                 format!("Could not check ({reason})")
             }
         }
+    }
+
+    /// True for [`AccurateRipStatus::Accurate`].
+    pub fn is_accurate(&self) -> bool {
+        matches!(self, AccurateRipStatus::Accurate { .. })
     }
 }
 
@@ -934,6 +1155,11 @@ pub enum CtdbStatus {
         confidence: u32,
         /// Total submissions for this TOC.
         total: u32,
+        /// `+0` for an entry of this pressing; otherwise the entry is of a
+        /// pressing whose audio sits this many samples later (see
+        /// [`AccurateRipStatus::Accurate`]). Absent in older reports.
+        #[serde(default, rename = "pressingOffset")]
+        pressing_offset: SampleOffset,
     },
     /// Entries exist but none match (repairable or damaged rip).
     Mismatch {
@@ -953,8 +1179,18 @@ impl CtdbStatus {
     /// The phrase shown in the UI and log.
     pub fn summary(&self) -> String {
         match self {
-            CtdbStatus::Accurate { confidence, total } => {
-                format!("Accurately ripped (confidence {confidence} of {total})")
+            CtdbStatus::Accurate {
+                confidence,
+                total,
+                pressing_offset,
+            } => {
+                if pressing_offset.0 == 0 {
+                    format!("Accurately ripped (confidence {confidence} of {total})")
+                } else {
+                    format!(
+                        "Accurately ripped (confidence {confidence} of {total}, pressing offset {pressing_offset})"
+                    )
+                }
             }
             CtdbStatus::Mismatch { .. } => "Mismatch".to_owned(),
             CtdbStatus::NotInDatabase => "Not in database".to_owned(),
@@ -1045,6 +1281,113 @@ pub struct RipReport {
     pub tracks: Vec<TrackReport>,
     /// CTDB result.
     pub ctdb: CtdbStatus,
+    /// The verdict on the whole disc (format version 2; worked out from
+    /// the tracks when an older report is read).
+    #[serde(default)]
+    pub verdict: DiscVerdict,
+}
+
+/// The verdict on a whole rip, from the read results and both databases.
+///
+/// A rip that matches only another pressing (a non-zero pressing offset) is
+/// [`DiscVerdict::Accurate`]: its audio is bit-for-bit what that pressing's
+/// rippers got, merely positioned differently on the disc, so it is an exact
+/// archival copy of the music. The offsets are listed so nobody mistakes it
+/// for a rip of that other pressing.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "status")]
+pub enum DiscVerdict {
+    /// Some sectors could not be read reliably: not an exact copy.
+    ReadErrors,
+    /// Every audio track is confirmed by AccurateRip, or the CUETools
+    /// database confirms the whole disc.
+    Accurate {
+        /// Pressing offsets (other than `+0`) of the matches, ascending;
+        /// empty when everything matched this pressing.
+        #[serde(rename = "otherPressingOffsets")]
+        other_pressing_offsets: Vec<SampleOffset>,
+    },
+    /// Some tracks are confirmed, others are not.
+    PartlyAccurate {
+        /// Tracks AccurateRip confirms.
+        #[serde(rename = "accurateTracks")]
+        accurate_tracks: u32,
+        /// Audio tracks on the disc.
+        tracks: u32,
+    },
+    /// The databases know the disc but disagree with this rip.
+    Mismatch,
+    /// Neither database knows the disc.
+    NotInDatabase,
+    /// The databases could not be asked (or nothing was checked yet).
+    #[default]
+    Unchecked,
+}
+
+impl DiscVerdict {
+    /// Works the verdict out from the per-track results and CTDB.
+    pub fn from_results(tracks: &[TrackReport], ctdb: &CtdbStatus) -> DiscVerdict {
+        let read_errors = tracks.iter().any(|t| {
+            !t.unrecovered_sectors.is_empty() || t.test_crc.is_some_and(|test| test != t.copy_crc)
+        });
+        if read_errors {
+            return DiscVerdict::ReadErrors;
+        }
+        let mut offsets: Vec<SampleOffset> = tracks
+            .iter()
+            .filter_map(|t| match t.accuraterip {
+                AccurateRipStatus::Accurate {
+                    pressing_offset, ..
+                } => Some(pressing_offset),
+                AccurateRipStatus::Mismatch { .. }
+                | AccurateRipStatus::NotInDatabase
+                | AccurateRipStatus::Unavailable { .. } => None,
+            })
+            .collect();
+        let accurate = offsets.len();
+        let ctdb_accurate = match ctdb {
+            CtdbStatus::Accurate {
+                pressing_offset, ..
+            } => {
+                offsets.push(*pressing_offset);
+                true
+            }
+            CtdbStatus::Mismatch { .. }
+            | CtdbStatus::NotInDatabase
+            | CtdbStatus::Unavailable { .. } => false,
+        };
+        offsets.retain(|o| o.0 != 0);
+        offsets.sort();
+        offsets.dedup();
+        let all = !tracks.is_empty() && accurate == tracks.len();
+        if all || ctdb_accurate {
+            return DiscVerdict::Accurate {
+                other_pressing_offsets: offsets,
+            };
+        }
+        if accurate > 0 {
+            return DiscVerdict::PartlyAccurate {
+                accurate_tracks: u32::try_from(accurate).unwrap_or(u32::MAX),
+                tracks: u32::try_from(tracks.len()).unwrap_or(u32::MAX),
+            };
+        }
+        let mismatch = matches!(ctdb, CtdbStatus::Mismatch { .. })
+            || tracks
+                .iter()
+                .any(|t| matches!(t.accuraterip, AccurateRipStatus::Mismatch { .. }));
+        if mismatch {
+            return DiscVerdict::Mismatch;
+        }
+        let unchecked = matches!(ctdb, CtdbStatus::Unavailable { .. })
+            || tracks
+                .iter()
+                .any(|t| matches!(t.accuraterip, AccurateRipStatus::Unavailable { .. }));
+        if unchecked || tracks.is_empty() {
+            DiscVerdict::Unchecked
+        } else {
+            DiscVerdict::NotInDatabase
+        }
+    }
 }
 
 impl RipReport {
@@ -1164,6 +1507,9 @@ pub enum ModelError {
     /// Track numbers run from 1 to 99.
     #[error("track number {0} is not between 1 and 99")]
     TrackNumber(u8),
+    /// Session numbers run from 1 to 99.
+    #[error("session number {0} is not between 1 and 99")]
+    SessionNumber(u8),
     /// Malformed table of contents.
     #[error("the table of contents does not make sense: {0}")]
     Toc(String),
@@ -1193,6 +1539,7 @@ mod tests {
             is_audio: true,
             pregap: Sectors(0),
             isrc: None,
+            session: SessionNumber::FIRST,
         }
     }
 
@@ -1204,6 +1551,188 @@ mod tests {
         assert!(Toc::new(vec![track(1, 0, 100), track(3, 100, 50)], Lba(150)).is_err());
         assert!(Toc::new(vec![track(1, 0, 100)], Lba(99)).is_err());
         assert!(Toc::new(vec![], Lba(0)).is_err());
+    }
+
+    fn data(number: u8, start: u32, length: u32, session: u8) -> TrackEntry {
+        TrackEntry {
+            is_audio: false,
+            session: SessionNumber::new(session).unwrap(),
+            ..track(number, start, length)
+        }
+    }
+
+    #[test]
+    fn sessions_allow_a_gap_and_nothing_else() {
+        // Enhanced CD: audio to 150, the data track in session 2 at 11 550.
+        let toc = Toc::new(
+            vec![
+                track(1, 0, 100),
+                track(2, 100, 50),
+                data(3, 11_550, 1_500, 2),
+            ],
+            Lba(13_050),
+        )
+        .unwrap();
+        assert_eq!(toc.audio_end(), Some(Lba(150)));
+        assert_eq!(toc.session_count(), 2);
+        assert_eq!(toc.layout(), DiscLayout::Enhanced);
+        assert_eq!(toc.data_tracks().count(), 1);
+        // A gap within a session is still refused…
+        assert!(Toc::new(vec![track(1, 0, 100), data(2, 200, 50, 1)], Lba(250)).is_err());
+        // …as is a new session that overlaps the last, skipping a session
+        // number, going back a session, or not starting with session 1.
+        assert!(Toc::new(vec![track(1, 0, 100), data(2, 100, 50, 2)], Lba(150)).is_err());
+        assert!(Toc::new(vec![track(1, 0, 100), data(2, 200, 50, 3)], Lba(250)).is_err());
+        let mut later = vec![track(1, 0, 100), data(2, 200, 50, 2), track(3, 250, 10)];
+        later[2].session = SessionNumber::new(2).unwrap();
+        assert!(Toc::new(later, Lba(260)).is_ok());
+        let mut back = vec![track(1, 0, 100), data(2, 200, 50, 2), track(3, 250, 10)];
+        back[2].session = SessionNumber::FIRST;
+        assert!(Toc::new(back, Lba(260)).is_err());
+        assert!(Toc::new(vec![data(1, 0, 100, 2)], Lba(100)).is_err());
+        assert!(SessionNumber::new(0).is_err());
+        assert!(SessionNumber::new(100).is_err());
+    }
+
+    #[test]
+    fn layouts() {
+        let audio = Toc::new(vec![track(1, 0, 100)], Lba(100)).unwrap();
+        assert_eq!(audio.layout(), DiscLayout::Audio);
+        let mixed = Toc::new(vec![data(1, 0, 100, 1), track(2, 100, 50)], Lba(150)).unwrap();
+        assert_eq!(mixed.layout(), DiscLayout::MixedMode);
+        let only_data = Toc::new(vec![data(1, 0, 100, 1)], Lba(100)).unwrap();
+        assert_eq!(only_data.layout(), DiscLayout::NoAudio);
+        assert_eq!(only_data.audio_end(), None);
+    }
+
+    #[test]
+    fn a_flat_listing_becomes_an_enhanced_cd() {
+        let flat = vec![track(1, 0, 20_000), data(2, 20_000, 5_000, 1)];
+        let toc = Toc::new_assuming_enhanced_gap(flat, Lba(25_000)).unwrap();
+        assert_eq!(toc.audio_end(), Some(Lba(20_000 - SESSION_GAP_SECTORS)));
+        assert_eq!(toc.tracks()[1].session.get(), 2);
+        assert_eq!(toc.tracks()[1].start_lba, Lba(20_000));
+        // An audio CD and a mixed-mode CD are left as they are.
+        let audio = Toc::new_assuming_enhanced_gap(vec![track(1, 0, 100)], Lba(100)).unwrap();
+        assert_eq!(audio.audio_end(), Some(Lba(100)));
+        let mixed =
+            Toc::new_assuming_enhanced_gap(vec![data(1, 0, 100, 1), track(2, 100, 50)], Lba(150))
+                .unwrap();
+        assert_eq!(mixed.session_count(), 1);
+        // A data track too close to the audio for a session gap is refused.
+        assert!(
+            Toc::new_assuming_enhanced_gap(
+                vec![track(1, 0, 5_000), data(2, 5_000, 100, 1)],
+                Lba(5_100)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn older_files_without_sessions_still_load() {
+        let json = r#"{"tracks":[{"number":1,"startLba":0,"lengthSectors":100,"isAudio":true}],"leadOut":100}"#;
+        let toc: Toc = serde_json::from_str(json).unwrap();
+        assert_eq!(toc.tracks()[0].session, SessionNumber::FIRST);
+        let status: AccurateRipStatus =
+            serde_json::from_str(r#"{"status":"accurate","version":"v2","confidence":4}"#).unwrap();
+        assert_eq!(
+            status,
+            AccurateRipStatus::Accurate {
+                version: AccurateRipVersion::V2,
+                confidence: 4,
+                pressing_offset: SampleOffset(0),
+            }
+        );
+    }
+
+    fn report_track(status: AccurateRipStatus) -> TrackReport {
+        TrackReport {
+            number: TrackNumber::new(1).unwrap(),
+            title: String::new(),
+            start_lba: Lba(0),
+            length_sectors: Sectors(1),
+            pregap: Sectors(0),
+            isrc: None,
+            peak: Peak(0),
+            copy_crc: Crc32(1),
+            test_crc: None,
+            accuraterip_crcs: AccurateRipCrcs {
+                v1: AccurateRipCrc(0),
+                v2: AccurateRipCrc(0),
+            },
+            accuraterip: status,
+            unrecovered_sectors: Vec::new(),
+            retried_sectors: 0,
+            file_name: String::new(),
+            file_sha256: None,
+        }
+    }
+
+    #[test]
+    fn disc_verdicts() {
+        let accurate = |offset: i32| AccurateRipStatus::Accurate {
+            version: AccurateRipVersion::V2,
+            confidence: 3,
+            pressing_offset: SampleOffset(offset),
+        };
+        let mismatch = AccurateRipStatus::Mismatch { best_confidence: 2 };
+        let none = CtdbStatus::NotInDatabase;
+        let verdict = |statuses: Vec<AccurateRipStatus>, ctdb: &CtdbStatus| {
+            let tracks: Vec<TrackReport> = statuses.into_iter().map(report_track).collect();
+            DiscVerdict::from_results(&tracks, ctdb)
+        };
+        assert_eq!(
+            verdict(vec![accurate(0), accurate(0)], &none),
+            DiscVerdict::Accurate {
+                other_pressing_offsets: Vec::new()
+            }
+        );
+        // Matching only another pressing is still an accurate rip.
+        assert_eq!(
+            verdict(vec![accurate(102), accurate(102)], &none),
+            DiscVerdict::Accurate {
+                other_pressing_offsets: vec![SampleOffset(102)]
+            }
+        );
+        assert_eq!(
+            verdict(vec![accurate(0), mismatch.clone()], &none),
+            DiscVerdict::PartlyAccurate {
+                accurate_tracks: 1,
+                tracks: 2
+            }
+        );
+        let ctdb = CtdbStatus::Accurate {
+            confidence: 2,
+            total: 2,
+            pressing_offset: SampleOffset(-48),
+        };
+        assert_eq!(
+            verdict(vec![AccurateRipStatus::NotInDatabase], &ctdb),
+            DiscVerdict::Accurate {
+                other_pressing_offsets: vec![SampleOffset(-48)]
+            }
+        );
+        assert_eq!(verdict(vec![mismatch], &none), DiscVerdict::Mismatch);
+        assert_eq!(
+            verdict(vec![AccurateRipStatus::NotInDatabase], &none),
+            DiscVerdict::NotInDatabase
+        );
+        assert_eq!(
+            verdict(
+                vec![AccurateRipStatus::Unavailable {
+                    reason: "offline".into()
+                }],
+                &none
+            ),
+            DiscVerdict::Unchecked
+        );
+        let mut broken = report_track(accurate(0));
+        broken.unrecovered_sectors.push(Lba(5));
+        assert_eq!(
+            DiscVerdict::from_results(&[broken], &none),
+            DiscVerdict::ReadErrors
+        );
     }
 
     #[test]
@@ -1252,8 +1781,18 @@ mod tests {
         let accurate = AccurateRipStatus::Accurate {
             version: AccurateRipVersion::V2,
             confidence: 12,
+            pressing_offset: SampleOffset(0),
         };
         assert_eq!(accurate.summary(), "Accurately ripped (confidence 12)");
+        let other = AccurateRipStatus::Accurate {
+            version: AccurateRipVersion::V1,
+            confidence: 8,
+            pressing_offset: SampleOffset(102),
+        };
+        assert_eq!(
+            other.summary(),
+            "Accurately ripped (confidence 8, pressing offset +102)"
+        );
         assert_eq!(
             AccurateRipStatus::NotInDatabase.summary(),
             "Not in database"

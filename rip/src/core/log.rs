@@ -13,8 +13,8 @@ use std::fmt::Write as _;
 
 use super::{Result, accuraterip};
 use crate::model::{
-    AccurateRipStatus, AccurateRipVersion, CtdbStatus, OffsetSource, ReadMode, RipReport, Sectors,
-    TrackNumber, TrackReport,
+    AccurateRipStatus, AccurateRipVersion, CtdbStatus, DiscLayout, OffsetSource, ReadMode,
+    RipReport, SampleOffset, Sectors, TrackNumber, TrackReport,
 };
 
 /// Width of the label column.
@@ -94,6 +94,15 @@ fn build(report: &RipReport) -> String {
         &accuraterip::database_file_name(&ids.accuraterip),
     );
     log.field("CTDB TOC", &ids.ctdb_toc);
+    match report.toc.layout() {
+        DiscLayout::Audio => {}
+        DiscLayout::Enhanced => log.field(
+            "Disc type",
+            "Enhanced CD (CD-Extra): audio, then a data session for computers",
+        ),
+        DiscLayout::MixedMode => log.field("Disc type", "Mixed-mode CD (data track first)"),
+        DiscLayout::NoAudio => log.field("Disc type", "Data CD (no audio)"),
+    }
     log.field(
         "Media catalogue no.",
         report
@@ -123,10 +132,46 @@ fn build(report: &RipReport) -> String {
             if track.is_audio { "audio" } else { "data" }
         ));
     }
+    if report.toc.session_count() > 1 {
+        for track in report.toc.tracks().windows(2) {
+            if let [before, after] = track
+                && after.session != before.session
+            {
+                log.raw(&format!(
+                    "  Session {} ends at sector {}; session {} starts at sector {} (track {})",
+                    before.session,
+                    before.end_lba().map_or(0, |end| end.0),
+                    after.session,
+                    after.start_lba,
+                    after.number
+                ));
+            }
+        }
+    }
     log.raw(&format!("  Lead-out at sector {}", report.toc.lead_out()));
 
     for track in &report.tracks {
         track_block(&mut log, track);
+    }
+    for track in report.toc.data_tracks() {
+        log.heading(&format!("Data track {} (not ripped)", track.number));
+        log.field("Session", &track.session.to_string());
+        log.field(
+            "Sectors",
+            &format!(
+                "{} to {}",
+                track.start_lba,
+                track
+                    .start_lba
+                    .0
+                    .saturating_add(track.length_sectors.0)
+                    .saturating_sub(1)
+            ),
+        );
+        log.field(
+            "Note",
+            "computer data, not audio: left out of the rip and of the checksums",
+        );
     }
 
     log.heading("CUETools database");
@@ -184,13 +229,20 @@ fn accuraterip_text(status: &AccurateRipStatus) -> String {
         AccurateRipStatus::Accurate {
             version,
             confidence,
-        } => format!(
-            "Accurately ripped (confidence {confidence}, {} checksum)",
-            match version {
+            pressing_offset,
+        } => {
+            let version = match version {
                 AccurateRipVersion::V1 => "v1",
                 AccurateRipVersion::V2 => "v2",
+            };
+            if pressing_offset.0 == 0 {
+                format!("Accurately ripped (confidence {confidence}, {version} checksum)")
+            } else {
+                format!(
+                    "Accurately ripped (confidence {confidence}, pressing offset {pressing_offset}, {version} checksum)"
+                )
             }
-        ),
+        }
         AccurateRipStatus::Mismatch { best_confidence } => format!(
             "Mismatch (the database has other checksums, best confidence {best_confidence})"
         ),
@@ -252,7 +304,9 @@ pub fn summary(report: &RipReport) -> String {
         let mismatched = numbers_where(|s| matches!(s, AccurateRipStatus::Mismatch { .. }));
         let unavailable = numbers_where(|s| matches!(s, AccurateRipStatus::Unavailable { .. }));
         if !tracks.is_empty() && accurate.len() == tracks.len() {
-            "All tracks accurately ripped.".to_owned()
+            let mut text = "All tracks accurately ripped.".to_owned();
+            text.push_str(&other_pressings_note(report));
+            text
         } else if !accurate.is_empty() {
             let mut text = format!(
                 "{} of {} tracks accurately ripped.",
@@ -290,11 +344,19 @@ pub fn summary(report: &RipReport) -> String {
         }
     };
     match &report.ctdb {
-        CtdbStatus::Accurate { confidence, total } => {
+        CtdbStatus::Accurate {
+            confidence,
+            total,
+            pressing_offset,
+        } => {
             let _ = write!(
                 text,
-                " The CUETools database confirms the whole disc (confidence {confidence} of {total})."
+                " The CUETools database confirms the whole disc (confidence {confidence} of {total}"
             );
+            if pressing_offset.0 != 0 {
+                let _ = write!(text, ", pressing offset {pressing_offset}");
+            }
+            text.push_str(").");
         }
         CtdbStatus::Mismatch { .. } => {
             text.push_str(" The CUETools database has this disc but does not match it.");
@@ -302,6 +364,34 @@ pub fn summary(report: &RipReport) -> String {
         CtdbStatus::NotInDatabase | CtdbStatus::Unavailable { .. } => {}
     }
     text
+}
+
+/// The explanation for tracks that matched another pressing: the audio is
+/// the same, so the rip is exact; only the position on the disc differs.
+fn other_pressings_note(report: &RipReport) -> String {
+    let mut offsets: Vec<SampleOffset> = report
+        .tracks
+        .iter()
+        .filter_map(|t| match t.accuraterip {
+            AccurateRipStatus::Accurate {
+                pressing_offset, ..
+            } if pressing_offset.0 != 0 => Some(pressing_offset),
+            AccurateRipStatus::Accurate { .. }
+            | AccurateRipStatus::Mismatch { .. }
+            | AccurateRipStatus::NotInDatabase
+            | AccurateRipStatus::Unavailable { .. } => None,
+        })
+        .collect();
+    offsets.sort();
+    offsets.dedup();
+    if offsets.is_empty() {
+        return String::new();
+    }
+    let list: Vec<String> = offsets.iter().map(ToString::to_string).collect();
+    format!(
+        " The database's matching rips are of another pressing of this album (pressing offset {}): the audio is identical, it only starts at a slightly different place on that pressing's disc, so this is still an exact copy.",
+        list.join(", ")
+    )
 }
 
 /// "track 02", "tracks 02 and 05", "tracks 02, 03 and 05".
@@ -367,7 +457,7 @@ pub(crate) mod tests {
     use crate::core::discid;
     use crate::model::{
         AccurateRipCrc, AccurateRipCrcs, Crc32, DriveIdentity, Isrc, Lba, Mbid, Peak,
-        ReleaseMetadata, SampleOffset, Sha256Digest, Toc, TrackEntry, TrackMetadata,
+        ReleaseMetadata, SessionNumber, Sha256Digest, Toc, TrackEntry, TrackMetadata,
     };
 
     fn number(n: u8) -> TrackNumber {
@@ -384,6 +474,7 @@ pub(crate) mod tests {
                 is_audio: true,
                 pregap: Sectors(0),
                 isrc: Some(Isrc::new("GBAYE0000351").unwrap()),
+                session: SessionNumber::FIRST,
             },
             TrackEntry {
                 number: number(2),
@@ -392,6 +483,7 @@ pub(crate) mod tests {
                 is_audio: true,
                 pregap: Sectors(150),
                 isrc: None,
+                session: SessionNumber::FIRST,
             },
         ];
         let toc = Toc::new(entries, Lba(35000)).unwrap();
@@ -413,6 +505,7 @@ pub(crate) mod tests {
             accuraterip: AccurateRipStatus::Accurate {
                 version: AccurateRipVersion::V2,
                 confidence: 12,
+                pressing_offset: SampleOffset(0),
             },
             unrecovered_sectors: Vec::new(),
             retried_sectors: 0,
@@ -457,6 +550,10 @@ pub(crate) mod tests {
             ctdb: CtdbStatus::Accurate {
                 confidence: 5,
                 total: 7,
+                pressing_offset: SampleOffset(0),
+            },
+            verdict: crate::model::DiscVerdict::Accurate {
+                other_pressing_offsets: Vec::new(),
             },
         }
     }
@@ -596,6 +693,7 @@ End of log
         let accurate = AccurateRipStatus::Accurate {
             version: AccurateRipVersion::V1,
             confidence: 2,
+            pressing_offset: SampleOffset(0),
         };
         let mismatch = AccurateRipStatus::Mismatch { best_confidence: 3 };
         let offline = AccurateRipStatus::Unavailable {
@@ -632,6 +730,7 @@ End of log
                 CtdbStatus::Accurate {
                     confidence: 1,
                     total: 1,
+                    pressing_offset: SampleOffset(0),
                 },
                 "All tracks read without errors. The disc is not in the AccurateRip database. The CUETools database confirms the whole disc (confidence 1 of 1).",
             ),
@@ -639,6 +738,50 @@ End of log
         for (statuses, ctdb, expected) in cases {
             assert_eq!(summary(&with_statuses(statuses, ctdb)), expected);
         }
+    }
+
+    #[test]
+    fn an_enhanced_cd_from_another_pressing() {
+        let mut report = sample_report();
+        let mut tracks = report.toc.tracks().to_vec();
+        tracks.push(TrackEntry {
+            number: number(3),
+            start_lba: Lba(35_000 + 11_400),
+            length_sectors: Sectors(3_000),
+            is_audio: false,
+            pregap: Sectors(0),
+            isrc: None,
+            session: SessionNumber::new(2).unwrap(),
+        });
+        report.toc = Toc::new(tracks, Lba(49_400)).unwrap();
+        report.disc_ids = discid::disc_ids(&report.toc).unwrap();
+        for track in &mut report.tracks {
+            track.accuraterip = AccurateRipStatus::Accurate {
+                version: AccurateRipVersion::V2,
+                confidence: 8,
+                pressing_offset: SampleOffset(102),
+            };
+        }
+        report.ctdb = CtdbStatus::Accurate {
+            confidence: 5,
+            total: 7,
+            pressing_offset: SampleOffset(102),
+        };
+        let log = render(&report).unwrap();
+        for expected in [
+            "  Disc type:            Enhanced CD (CD-Extra): audio, then a data session for computers\n",
+            "     03  10:18:50  00:40:00  00:00:00         46400        49399  data\n",
+            "  Session 1 ends at sector 35000; session 2 starts at sector 46400 (track 03)\n",
+            "\nData track 03 (not ripped)\n  Session:              2\n  Sectors:              46400 to 49399\n",
+            "  AccurateRip:          Accurately ripped (confidence 8, pressing offset +102, v2 checksum)\n",
+            "  Whole disc:           Accurately ripped (confidence 5 of 7, pressing offset +102)\n",
+            "All tracks accurately ripped. The database's matching rips are of another pressing of this album (pressing offset +102)",
+            "so this is still an exact copy. The CUETools database confirms the whole disc (confidence 5 of 7, pressing offset +102).",
+        ] {
+            assert!(log.contains(expected), "missing {expected:?} in\n{log}");
+        }
+        // The data track never gets a track block of its own.
+        assert!(!log.contains("\nTrack 03\n"));
     }
 
     #[test]

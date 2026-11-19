@@ -244,6 +244,22 @@ looks wrong, reorder by dragging, then **Upload all**: each file gets its own
 progress bar and can be retried. Files already uploaded can be renamed,
 renumbered, reordered and deleted, and subtitles added or removed.
 
+**Fill from MusicBrainz.** While music files are waiting, a panel above the
+list searches MusicBrainz for the CD (prefilled with the entry's artist and
+title, plus its barcode if the identifier is one; you can also paste a
+MusicBrainz release link). The releases found are ranked by how well their
+track lengths fit your files, so the pressing you ripped usually comes
+first, with a badge such as "Fits your 12 files". Pick one to see which file
+would get which disc, track and title, each marked **Good**, **Check** (a
+length a few seconds off, or a file name that disagrees) or **No match**
+(nothing fits: those files are left alone). **Apply** fills the list; titles
+and numbers you typed yourself are kept unless you tick "Overwrite titles
+and numbers I've typed myself". It can also fill in the entry's year and
+artist when they are empty. It needs `[lookup] enabled = true`; with
+lookups off the panel says so and offers nothing. Requests to MusicBrainz
+are spaced a second apart, identify the library with `[lookup] contact`,
+and are remembered for an hour.
+
 Accepted: music (MP3, M4A, AAC, FLAC, Ogg, Opus, WAV, WebM), films (MP4,
 M4V, WebM, MKV, MOV), documents (PDF, EPUB) and subtitles (SRT, converted to
 WebVTT, or VTT). Nothing else is converted: files are stored and streamed
@@ -287,10 +303,13 @@ cargo clippy --all-targets
 Layout: `src/db` (schema, items, locations, loans, photos, accounts, media
 files, playlists, favourites), `src/search`
 (query parser, SQL compiler, hybrid ranking), `src/embed` (candle BERT and
-the background indexer), `src/lookup.rs`, `src/dupes.rs`, `src/media.rs`
+the background indexer), `src/lookup.rs`, `src/musicbrainz.rs` (release
+track lists, rate limit, cache), `src/trackmatch.rs` (matching files to
+tracks), `src/dupes.rs`, `src/media.rs`
 (photos, barcodes), `src/digital.rs` (upload rules, subtitles), `src/views`
 (maud), `src/web` (handlers, auth, middleware, the Player's JSON API in
-`api.rs`/`accounts.rs`/`stream.rs`, the upload studio in `studio.rs`),
+`api.rs`/`accounts.rs`/`stream.rs`, the upload studio in `studio.rs` and
+its MusicBrainz panel in `fill.rs`),
 `static/` (CSS, htmx, small progressive-enhancement JS, fonts), `player/`
 (the Player PWA). The contract between the server and the Player is
 `docs/player.md`.

@@ -4,6 +4,7 @@ pub mod accounts;
 pub mod admin;
 pub mod api;
 pub mod auth;
+pub mod fill;
 pub mod player;
 pub mod public;
 pub mod stream;
@@ -120,6 +121,7 @@ fn api_routes() -> Router<AppState> {
 pub fn router(state: AppState) -> Router {
     let admin = admin::routes()
         .merge(studio::routes())
+        .merge(fill::routes())
         .layer(DefaultBodyLimit::max(100 << 20))
         // The upload studio streams files to disk and checks the size itself.
         .merge(studio::upload_routes());
@@ -586,6 +588,7 @@ pub fn asset_version() -> &'static str {
             "js/app.js",
             "js/htmx.min.js",
             "js/media-upload.js",
+            "js/musicbrainz-fill.js",
         ] {
             if let Some(a) = Assets::get(f) {
                 h.update(&a.data);

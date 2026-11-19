@@ -283,8 +283,53 @@ JSON `POST/PUT/PATCH/DELETE` must pass the existing same-origin check
   streamed to disk server-side, no size limit on that route besides
   `[media] max_upload_mb`, default 20000). Existing files can be renamed,
   renumbered, reordered and deleted; subtitles added/removed per video.
-  Music items fetched from MusicBrainz may prefill track titles if the
-  lookup data is easy to reach — optional.
+- **Fill from MusicBrainz** (`static/js/musicbrainz-fill.js`, server in
+  `src/web/fill.rs`, `src/musicbrainz.rs`, `src/trackmatch.rs`): a panel
+  above the pending table, shown while music files wait to upload.
+  - Search box prefilled with the item's creator and title; the item's
+    `identifier` is searched as a barcode too when it is an EAN/UPC (not an
+    ISBN). A pasted MusicBrainz release link or MBID fetches that release
+    alone. No MusicBrainz release id is stored on items (the add form's
+    lookup keeps none), so the barcode is the exact route.
+  - Once every file's length is measured it searches by itself. The server
+    runs the barcode and text searches, fetches the full track lists of the
+    (at most 4) releases whose track counts are closest to the number of
+    files, and ranks every candidate by its fit score (below); the rest are
+    scored by track count only and rank lower. Each candidate shows title,
+    artist, year, country, format ("2×CD"), tracks per disc, total length
+    and a badge ("Fits your 12 files", "10 of your 12 files fit · 13 tracks").
+  - Picking one shows a preview: each file → disc, track, title (and the
+    track's artist where it differs from the release's), with a marker:
+    **Good**, **Check** (with the reason) or **No match** (not applied).
+    Tracks no file matched are listed. **Apply** fills the pending rows and
+    re-sorts them by disc and track; a field the librarian typed in by hand
+    is kept unless "Overwrite titles and numbers I've typed myself" is
+    ticked. Options: put each track's artist in its title (compilations);
+    set the item's year / creator when they are empty.
+  - With `[lookup] enabled = false` the panel only explains that lookups
+    are off.
+  - **Matching** lives in Rust (`src/trackmatch.rs`), not the browser: the
+    server already fetches and caches the candidate releases, ranking needs
+    several full track lists that would otherwise all travel to the page,
+    and the rules get unit tests beside the parser. Each file is scored
+    against each track — measured length vs the track's length (weight 6;
+    full marks within 2 s, falling to nothing at 15 s), disc/track numbers
+    parsed from the name (weight 3; a straight-through number on a
+    multi-disc release counts), normalised title similarity (weight 2;
+    "Track 01"-style names carry no title) — and the Hungarian method picks
+    the best one-to-one assignment. A file more than 10 s (or 2% of a long
+    track) from its track is **No match**, never assigned silently; within
+    3 s with an agreeing name, or a length no other track shares, is
+    **Good**; anything else is **Check**. A release's fit score (0–100)
+    starts at 100 and loses 12 per file/track count difference (up to 60),
+    20 per unmatched file, 4 per file to check and 3 per second of mean
+    length error (up to 40).
+  - MusicBrainz etiquette: every request to it from the process (the add
+    form's search too) passes one rate limiter (`[lookup]
+    musicbrainz_interval_ms`, default 1000, never less than 1000 for
+    musicbrainz.org itself), carries the `home-library/<version> ( contact )`
+    user agent, and answers are cached in memory for an hour (releases by
+    MBID, searches by query; 200 of each).
 - Studio endpoints (librarian only, same-origin check applies):
   - `POST /admin/items/{id}/media/upload` — multipart, one file per request:
     text fields `kind`, `title`, `disc`, `track`, `duration_ms` **before**
@@ -293,6 +338,26 @@ JSON `POST/PUT/PATCH/DELETE` must pass the existing same-origin check
   - `POST /admin/items/{id}/media/{mid}/subtitles` — multipart `file`
     (`.srt`/`.vtt`), optional `language`, `label`; with
     `Accept: application/json` → 201 `{id}`, otherwise redirects back.
+  - `POST /admin/items/{id}/media/musicbrainz/search` — JSON
+    `{query, barcode?, files: FileInfo[]}` → `{candidates, notes}`;
+    candidates (best fit first) carry `id, title, artist, year, date,
+    country, barcode, format, discTracks, trackCount, totalMs, url` and
+    `fit: {score, files, tracks, good, check, none, durationErrorMs,
+    compared, summary}` (`null` when no files were sent). 403 when lookups
+    are off, 400 for an empty query, 502 when MusicBrainz doesn't answer.
+    `FileInfo = {key, name, disc?, track?, title, durationMs?}` (`key` is
+    the studio's row id, echoed back).
+  - `GET /admin/items/{id}/media/musicbrainz/release/{mbid}` — the release:
+    `{id, title, artist, year, date, country, barcode, media: [{position,
+    format, title, tracks: [{position, number, title, lengthMs, artist}]}]}`
+    (`artist` only when it differs from the release's); 404 for an unknown
+    id.
+  - `POST /admin/items/{id}/media/musicbrainz/match` — `{release, files}` →
+    `{release, matches: [{key, confidence: "good"|"check"|"none", disc,
+    track, title, artist, lengthMs, note}], missing: [{disc, track, title,
+    lengthMs}], fit}`.
+  - `POST /admin/items/{id}/media/musicbrainz/item` — `{creator?, year?}`
+    sets them only where the item's are empty → `{creator, year}`.
   - `GET /admin/items/{id}/media/list` — the list of existing files (HTML
     fragment); `POST …/media/{mid}` (title, disc, track),
     `POST …/media/{mid}/move` (`dir=up|down`), `POST …/media/{mid}/delete`,
@@ -421,6 +486,9 @@ playlists, playback (next, previous, ±10 s), the Up next order, history,
 favourites, playlists (create, add, reorder, rename, delete, 403 for
 others), downloading and playing offline, clearing downloads, film
 subtitles, the PDF viewer, the manifest and service worker, the Player
-button, the upload studio, and an absence of console errors. Lock-screen
+button, the upload studio (including filling tracks from MusicBrainz), and
+an absence of console errors. The global setup also starts a pretend
+MusicBrainz (`e2e/mock-musicbrainz.ts`) in the test runner and points every
+`[lookup]` source at it, so nothing leaves the machine. Lock-screen
 and headset controls (Media Session) cannot be driven from a headless
 browser; `src/player/mediaSession.test.ts` covers them.

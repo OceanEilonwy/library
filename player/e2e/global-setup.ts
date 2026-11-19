@@ -1,6 +1,7 @@
 // Seeds a throwaway data folder with scripts/dev-seed.py (accounts, items,
 // files uploaded through the real studio endpoint, playlists) and starts the
-// Rust server on it. It builds nothing but the server binary, and only if
+// Rust server on it, with its online lookups pointed at a pretend
+// MusicBrainz (e2e/mock-musicbrainz.ts) that runs in this process. It builds nothing but the server binary, and only if
 // cargo thinks it is out of date; run `npm run build` first for the Player.
 
 import { spawn, spawnSync } from 'node:child_process';
@@ -8,6 +9,7 @@ import { existsSync, mkdtempSync, openSync, writeFileSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { startMockMusicBrainz } from './mock-musicbrainz';
 import { REPO, STATE_FILE, type E2EState } from './state';
 
 function portOpen(port: number): Promise<boolean> {
@@ -52,6 +54,10 @@ export default async function globalSetup(): Promise<void> {
   const port = Number(process.env.E2E_PORT);
   if (await portOpen(port)) throw new Error(`port ${port} is in use; set E2E_PORT to a free port`);
 
+  const musicbrainz = await startMockMusicBrainz();
+  // Closed by the global teardown, which runs in this same process.
+  (globalThis as { mockMusicBrainz?: typeof musicbrainz }).mockMusicBrainz = musicbrainz;
+
   const root = mkdtempSync(join(tmpdir(), 'library-e2e-'));
   const dataDir = join(root, 'data-e2e');
   const config = join(root, 'library.toml');
@@ -65,7 +71,14 @@ export default async function globalSetup(): Promise<void> {
       '[semantic]',
       'enabled = false',
       '[lookup]',
-      'enabled = false',
+      // Every source points at the pretend MusicBrainz: nothing leaves the machine.
+      'enabled = true',
+      `musicbrainz_url = "${musicbrainz.url}/ws/2"`,
+      'musicbrainz_interval_ms = 50',
+      `open_library_url = "${musicbrainz.url}/none"`,
+      `google_books_url = "${musicbrainz.url}/none"`,
+      `tmdb_url = "${musicbrainz.url}/none"`,
+      `upc_url = "${musicbrainz.url}/none"`,
       '',
     ].join('\n'),
   );

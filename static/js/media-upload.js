@@ -106,7 +106,8 @@
         title = m[3];
       }
     }
-    return { disc: disc || 1, track: track, title: tidy(title) || stem };
+    // `discFound` is null when neither the name nor a folder gave a disc.
+    return { disc: disc || 1, discFound: disc, track: track, title: tidy(title) || stem };
   }
 
   // "Film.en.srt" → { stem: "Film", language: "en", label: "English" }
@@ -193,11 +194,22 @@
       pending.push({
         id: nextId++, file: x.file, path: x.path, kind: kind,
         disc: parsed.disc, track: kind === "audio" ? parsed.track : null, title: parsed.title,
+        parsedDisc: parsed.discFound,
+        edited: {},    // fields the librarian typed in by hand
+        fill: null,    // { confidence, note } after "Fill from MusicBrainz"
         durationMs: null, size: x.file.size, subtitles: [],
         status: x.file.size > maxBytes ? "error" : "ready", progress: 0,
         error: x.file.size > maxBytes ? "Bigger than the upload limit." : ""
       });
     });
+    sortPending();
+    subs.forEach(attachSubtitle);
+    render();
+    measureAll();
+  }
+
+  // Disc, then track, then name; finished rows stay where they are.
+  function sortPending() {
     pending.sort(function (a, b) {
       if (a.status === "done" || b.status === "done") return 0;
       return (a.disc - b.disc) ||
@@ -205,9 +217,6 @@
         ((a.track || 0) - (b.track || 0)) ||
         naturalCompare(a.path, b.path);
     });
-    subs.forEach(attachSubtitle);
-    render();
-    measureAll();
   }
 
   function attachSubtitle(x) {
@@ -238,6 +247,7 @@
         updateRow(p);
         renderSummary();
         measureAll();
+        changed();
       });
     });
   }
@@ -326,7 +336,15 @@
 
     var title = el("input", { className: "u-input", maxlength: "300", "data-field": "title", "aria-label": "Title", value: p.title });
     title.disabled = locked;
-    tr.appendChild(el("td", { className: "title" }, [title, el("span", { className: "path small muted", text: p.path })]));
+    var mark = null;
+    if (p.fill && !locked) {
+      mark = el("span", {
+        className: "mb-mark mb-" + p.fill.confidence,
+        title: p.fill.note || "Filled from MusicBrainz",
+        text: p.fill.confidence === "good" ? "✓ MusicBrainz" : "Check: " + (p.fill.note || "filled from MusicBrainz")
+      });
+    }
+    tr.appendChild(el("td", { className: "title" }, [title, el("span", { className: "path small muted", text: p.path }), mark]));
 
     var kinds = kindChoices(p);
     if (kinds.length > 1 && !locked) {
@@ -401,6 +419,7 @@
     var waiting = pending.some(function (p) { return p.status === "ready" || p.status === "error"; });
     uploadBtn.disabled = uploading || !waiting;
     clearBtn.disabled = uploading;
+    changed();
   }
 
   function updateRow(p) {
@@ -435,6 +454,7 @@
     var p = find(e.target.closest("tr"));
     if (!field || !p) return;
     var v = e.target.value;
+    p.edited[field] = true;
     if (field === "title") p.title = v;
     else if (field === "disc") p.disc = Math.max(1, parseInt(v, 10) || 1);
     else if (field === "track") p.track = v.trim() === "" ? null : (parseInt(v, 10) || null);
@@ -707,6 +727,66 @@
     });
   });
 
-  // Exposed for the browser console and tests of the name rules.
-  window.libraryStudio = { parseName: parseName, parseSubtitle: parseSubtitle, kindOf: kindOf };
+  // ---------- hooks for "Fill from MusicBrainz" (musicbrainz-fill.js) ----------
+
+  var listeners = [];
+  function changed() {
+    listeners.forEach(function (fn) {
+      try { fn(); } catch (e) { /* a listener's problem stays its own */ }
+    });
+  }
+
+  // The music files still waiting, as the matcher wants them.
+  function musicFiles() {
+    return pending
+      .filter(function (p) { return p.kind === "audio" && (p.status === "ready" || p.status === "error"); })
+      .map(function (p) {
+        return {
+          key: String(p.id),
+          name: p.path,
+          disc: p.edited.disc ? p.disc : p.parsedDisc,
+          track: p.track,
+          title: p.title,
+          durationMs: p.durationMs || null
+        };
+      });
+  }
+
+  function stillMeasuring() {
+    return pending.some(function (p) {
+      return p.kind !== "document" && p.durationMs === null && p.status !== "done";
+    });
+  }
+
+  // Applies matched track details. A field typed in by hand is kept unless
+  // `overwrite` is set. Returns how many rows changed.
+  function applyFill(changes, overwrite) {
+    var count = 0;
+    changes.forEach(function (c) {
+      var p = pending.filter(function (x) { return String(x.id) === c.key; })[0];
+      if (!p || p.kind !== "audio" || p.status === "uploading" || p.status === "done") return;
+      var before = [p.disc, p.track, p.title].join("|");
+      if (c.disc && (overwrite || !p.edited.disc)) p.disc = c.disc;
+      if (c.track && (overwrite || !p.edited.track)) p.track = c.track;
+      if (c.title && (overwrite || !p.edited.title)) p.title = c.title;
+      if (overwrite) p.edited = {};
+      p.fill = { confidence: c.confidence, note: c.note || "" };
+      if ([p.disc, p.track, p.title].join("|") !== before) count++;
+    });
+    sortPending();
+    render();
+    return count;
+  }
+
+  // Exposed for the MusicBrainz panel, the browser console and tests of
+  // the name rules.
+  window.libraryStudio = {
+    parseName: parseName,
+    parseSubtitle: parseSubtitle,
+    kindOf: kindOf,
+    files: musicFiles,
+    measuring: stillMeasuring,
+    apply: applyFill,
+    onChange: function (fn) { listeners.push(fn); }
+  };
 })();

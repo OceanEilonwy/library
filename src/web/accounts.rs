@@ -65,6 +65,10 @@ pub enum ApiError {
     Invalid(Invalid),
     TooLarge(String),
     TooMany,
+    /// 404 with a message of its own (something outside the library).
+    Missing(String),
+    /// 502: an outside service (MusicBrainz) didn't answer.
+    Upstream(String),
     Internal(anyhow::Error),
 }
 
@@ -121,6 +125,8 @@ impl IntoResponse for ApiError {
                 "Too many wrong attempts. Wait ten minutes and try again.".to_owned(),
                 None,
             ),
+            ApiError::Missing(m) => (StatusCode::NOT_FOUND, m, None),
+            ApiError::Upstream(m) => (StatusCode::BAD_GATEWAY, m, None),
             ApiError::Internal(e) => {
                 tracing::error!(error = ?e, "api request failed");
                 (

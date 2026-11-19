@@ -336,6 +336,34 @@ pub fn delete(conn: &mut Connection, id: i64) -> Result<Vec<String>> {
     Ok(files)
 }
 
+/// Sets an item's creator and year only where they are empty (the upload
+/// studio's "Fill from MusicBrainz"). Returns the item afterwards, or
+/// `None` if there is no such item.
+pub fn fill_empty(
+    conn: &mut Connection,
+    id: i64,
+    creator: &str,
+    year: Option<i64>,
+) -> Result<Option<Item>> {
+    let tx = conn.transaction()?;
+    let creator = crate::util::clean(creator, 300);
+    let year = year.filter(|y| (1000..=3000).contains(y));
+    let changed = tx.execute(
+        "UPDATE items SET
+            creator = CASE WHEN creator = '' THEN ?2 ELSE creator END,
+            year = coalesce(year, ?3),
+            updated_at = ?4, embed_hash = NULL
+         WHERE id = ?1 AND ((creator = '' AND ?2 <> '') OR (year IS NULL AND ?3 IS NOT NULL))",
+        params![id, creator, year, now()],
+    )?;
+    if changed > 0 {
+        sync_fts(&tx, id)?;
+    }
+    let item = get(&tx, id)?;
+    tx.commit()?;
+    Ok(item)
+}
+
 pub fn get(conn: &Connection, id: i64) -> Result<Option<Item>> {
     Ok(conn
         .prepare_cached(&format!("{ITEM_SELECT} WHERE i.id = ?1"))?

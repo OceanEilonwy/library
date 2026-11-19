@@ -81,3 +81,99 @@ test('the librarian uploads ripped tracks in the studio', async ({ page }) => {
   ]);
   for (const file of item.media) expect(file.durationMs).toBeGreaterThan(900);
 });
+
+test('the studio fills disc, track and title from MusicBrainz', async ({ page }) => {
+  await page.goto('/unlock?next=/');
+  const password = page.locator('#unlock-password-page');
+  await password.fill('librarian');
+  await password.press('Enter');
+  await expect(page).toHaveURL(/\/$/);
+
+  const created = await page.request.post('/admin/items', {
+    multipart: { type_id: '2', title: 'Studio Session', creator: 'The Uploaders', keep_duplicate: 'yes' },
+  });
+  const id = /\/items\/(\d+)/.exec(created.url())?.[1];
+  expect(id).toBeTruthy();
+
+  await page.goto(`/admin/items/${id}/media`);
+  const panel = page.locator('#mb-fill');
+  await expect(panel).toBeHidden();
+  await expect(page.locator('#mb-query')).toHaveValue('The Uploaders Studio Session');
+
+  // A ripper that numbered the tracks wrongly: only the lengths tell.
+  // The original pressing's tracks are 0:12, 0:25 and 0:40 long.
+  await page.locator('#pick-files').setInputFiles([
+    { name: 'Track 1.wav', mimeType: 'audio/wav', buffer: wav(330, 40) },
+    { name: 'Track 2.wav', mimeType: 'audio/wav', buffer: wav(440, 12) },
+    { name: 'Track 3.wav', mimeType: 'audio/wav', buffer: wav(550, 25) },
+  ]);
+  await expect(panel).toBeVisible();
+  const titleOf = (file: string) =>
+    page.locator('#pending-rows tr', { has: page.getByText(file, { exact: true }) }).locator('input[data-field="title"]');
+  const trackOf = (file: string) =>
+    page.locator('#pending-rows tr', { has: page.getByText(file, { exact: true }) }).locator('input[data-field="track"]');
+  // A title typed by hand before filling in.
+  await titleOf('Track 3.wav').fill('My Own Title');
+
+  // Once the lengths are measured it searches by itself; the original
+  // comes first although MusicBrainz listed the remaster first.
+  const candidates = page.locator('#mb-candidates li');
+  await expect(candidates).toHaveCount(3);
+  await expect(candidates.first()).toContainText('Studio Session');
+  await expect(candidates.first()).toContainText('Best fit');
+  await expect(candidates.first().locator('.mb-fit')).toHaveText('Fits your 3 files');
+  await expect(candidates.first()).toContainText('2001 · GB · CD · 3 tracks · 1:17');
+  await expect(candidates.nth(1)).toContainText('Deluxe Edition');
+  await expect(candidates.nth(1).locator('.mb-fit')).toHaveText('3 of your 3 files fit · 6 tracks');
+  await expect(candidates.nth(2)).toContainText('Remastered');
+  await expect(candidates.nth(2).locator('.mb-fit')).toHaveText('0 of your 3 files fit');
+
+  // The remaster's preview leaves every file alone: no length fits.
+  await candidates.nth(2).locator('button.mb-pick').click();
+  const preview = page.locator('#mb-preview');
+  await expect(preview.locator('tbody tr')).toHaveCount(3);
+  await expect(preview.locator('.mb-conf.none')).toHaveCount(3);
+  await expect(preview.getByRole('button', { name: 'Nothing to apply' })).toBeDisabled();
+
+  // The original: each file to its track, by length.
+  await candidates.first().locator('button.mb-pick').click();
+  await expect(preview.locator('.mb-conf.good')).toHaveCount(3);
+  await expect(preview.locator('tbody tr').first()).toContainText('Track 2.wav');
+  await expect(preview.locator('tbody tr').first()).toContainText('Opening');
+  await expect(preview.getByLabel("Also set this entry's year to 2001")).toBeChecked();
+  await preview.getByRole('button', { name: 'Apply to 3 files' }).click();
+
+  await expect(page.locator('#mb-status')).toContainText('Filled 3 files from “Studio Session”');
+  await expect(page.locator('#mb-status')).toContainText("The entry's year was filled in too.");
+  await expect(preview).toBeHidden();
+  // Rows are now in track order; the hand-typed title was kept.
+  await expect(page.locator('#pending-rows tr .path')).toHaveText(['Track 2.wav', 'Track 3.wav', 'Track 1.wav']);
+  await expect(titleOf('Track 2.wav')).toHaveValue('Opening');
+  await expect(titleOf('Track 3.wav')).toHaveValue('My Own Title');
+  await expect(titleOf('Track 1.wav')).toHaveValue('Closing Time');
+  await expect(trackOf('Track 1.wav')).toHaveValue('3');
+  await expect(page.locator('#pending-rows .mb-mark.mb-good')).toHaveCount(3);
+
+  // Filling again with "overwrite my edits" replaces the typed title.
+  await candidates.first().locator('button.mb-pick').click();
+  await preview.getByLabel("Overwrite titles and numbers I've typed myself").check();
+  await preview.getByRole('button', { name: 'Apply to 3 files' }).click();
+  await expect(titleOf('Track 3.wav')).toHaveValue('Long Middle');
+
+  await page.getByRole('button', { name: 'Upload all' }).click();
+  await expect(page.locator('#upload-status')).toHaveText('All 3 files uploaded.');
+  await expect(panel).toBeHidden();
+
+  const login = await page.request.post('/api/account/login', { data: { login: 'adult', password: 'password123' } });
+  expect(login.status()).toBe(200);
+  const item = (await (await page.request.get(`/api/items/${id}`)).json()) as {
+    year: number | null;
+    media: { title: string; disc: number; track: number }[];
+  };
+  expect(item.year).toBe(2001);
+  expect(item.media.map((file) => [file.disc, file.track, file.title])).toEqual([
+    [1, 1, 'Opening'],
+    [1, 2, 'Long Middle'],
+    [1, 3, 'Closing Time'],
+  ]);
+});

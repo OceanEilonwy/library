@@ -708,7 +708,13 @@ pub fn size_label(bytes: i64) -> String {
     }
 }
 
-pub fn studio_page(ctx: &Ctx, d: &StudioData, flash: Option<&str>, max_bytes: u64) -> Markup {
+pub fn studio_page(
+    ctx: &Ctx,
+    d: &StudioData,
+    flash: Option<&str>,
+    max_bytes: u64,
+    lookups_enabled: bool,
+) -> Markup {
     let it = &d.item;
     let accept = crate::digital::ACCEPTED
         .iter()
@@ -747,6 +753,7 @@ pub fn studio_page(ctx: &Ctx, d: &StudioData, flash: Option<&str>, max_bytes: u6
                     input #pick-files.picker type="file" multiple accept=(accept);
                 }
                 noscript { p.flash.err { "The upload studio needs JavaScript switched on." } }
+                (musicbrainz_panel(it, lookups_enabled))
                 div #pending.pending hidden {
                     div.pending-head {
                         h3.kicker { "Ready to upload" }
@@ -785,8 +792,50 @@ pub fn studio_page(ctx: &Ctx, d: &StudioData, flash: Option<&str>, max_bytes: u6
                 (media_list(d))
             }
             script src={ "/static/js/media-upload.js?v=" (ctx.asset_version) } defer {}
+            script src={ "/static/js/musicbrainz-fill.js?v=" (ctx.asset_version) } defer {}
         },
     )
+}
+
+/// "Fill from MusicBrainz": shown by the studio's script while music files
+/// are waiting. Its script draws the candidates and the preview.
+fn musicbrainz_panel(it: &Item, enabled: bool) -> Markup {
+    let query = crate::web::fill::prefill_query(it);
+    let barcode = crate::web::fill::item_barcode(it).unwrap_or_default();
+    html! {
+        section #mb-fill.mb-fill hidden aria-labelledby="mb-fill-title"
+            data-enabled=(if enabled { "1" } else { "0" })
+            data-barcode=(barcode)
+            data-item-creator=(it.creator)
+            data-item-year=(it.year.map(|y| y.to_string()).unwrap_or_default()) {
+            div.mb-head {
+                h3 #mb-fill-title .kicker.accent { "Fill from MusicBrainz" }
+                p.small.muted {
+                    "Find the CD on MusicBrainz and copy its disc numbers, track numbers and titles into the list below. "
+                    "Nothing changes until you press Apply."
+                }
+            }
+            @if enabled {
+                form #mb-search.mb-search role="search" {
+                    label.visually-hidden for="mb-query" { "Search MusicBrainz" }
+                    input #mb-query.u-input type="search" name="q" value=(query) maxlength="200"
+                        placeholder="Artist and album, a barcode, or a MusicBrainz link" autocomplete="off";
+                    button.btn.solid type="submit" { "Search" }
+                }
+                @if !barcode.is_empty() {
+                    p.small.muted { "The barcode on this entry (" span.mono { (barcode) } ") is searched too." }
+                }
+                p #mb-status.small role="status" {}
+                ol #mb-candidates.mb-candidates {}
+                div #mb-preview.mb-preview hidden {}
+            } @else {
+                p.mb-off.small {
+                    "Online lookups are switched off (" span.mono { "[lookup] enabled = false" }
+                    " in library.toml), so track details can't be fetched. Check the titles and numbers below by hand."
+                }
+            }
+        }
+    }
 }
 
 /// The files already uploaded, with inline editing. Re-rendered by htmx

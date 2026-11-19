@@ -107,6 +107,9 @@ pub struct LookupConfig {
     pub open_library_url: String,
     pub google_books_url: String,
     pub musicbrainz_url: String,
+    /// Milliseconds between requests to MusicBrainz (at least 1000 for
+    /// musicbrainz.org itself; lower only for a local mirror).
+    pub musicbrainz_interval_ms: u64,
     pub tmdb_url: String,
     pub upc_url: String,
 }
@@ -149,6 +152,7 @@ impl Default for LookupConfig {
             open_library_url: "https://openlibrary.org".into(),
             google_books_url: "https://www.googleapis.com/books/v1".into(),
             musicbrainz_url: "https://musicbrainz.org/ws/2".into(),
+            musicbrainz_interval_ms: 1000,
             tmdb_url: "https://api.themoviedb.org/3".into(),
             upc_url: "https://api.upcitemdb.com/prod/trial".into(),
         }

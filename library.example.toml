@@ -32,6 +32,9 @@ model = "BAAI/bge-small-en-v1.5"
 enabled = true
 # MusicBrainz asks clients to identify themselves; a URL or email is fine.
 # contact = "https://example.org"
+# The upload studio's "Fill from MusicBrainz" spaces its requests at least a
+# second apart, as MusicBrainz asks (only a local mirror may go faster).
+# musicbrainz_interval_ms = 1000
 # Film lookups need a free TMDb "API Read Access Token".
 # tmdb_token = ""
 timeout_secs = 15

@@ -98,6 +98,7 @@ pub async fn page(
         &data,
         flash,
         st.cfg.media.max_upload_bytes(),
+        st.lookups.enabled(),
     )))
 }
 

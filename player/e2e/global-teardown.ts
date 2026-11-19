@@ -1,9 +1,12 @@
-// Stops the server started by the global setup and deletes its data.
+// Stops the server (and the pretend MusicBrainz) started by the global
+// setup and deletes its data.
 
 import { existsSync, readFileSync, rmSync } from 'node:fs';
+import type { MockMusicBrainz } from './mock-musicbrainz';
 import { STATE_FILE, type E2EState } from './state';
 
 export default async function globalTeardown(): Promise<void> {
+  await (globalThis as { mockMusicBrainz?: MockMusicBrainz }).mockMusicBrainz?.close();
   if (!existsSync(STATE_FILE)) return;
   const state = JSON.parse(readFileSync(STATE_FILE, 'utf8')) as E2EState;
   try {

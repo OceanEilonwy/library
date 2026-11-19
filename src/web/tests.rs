@@ -2240,3 +2240,288 @@ async fn restricted_checkbox_badge_and_player_button() {
             .contains("Adults only")
     );
 }
+
+// ---------- the studio's "Fill from MusicBrainz" ----------
+
+/// A stand-in MusicBrainz: a search that lists the wrong pressing first,
+/// and the two releases' track lists. Counts the requests it gets.
+async fn mock_musicbrainz() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    use axum::extract::{Path as P, Query as Q, State as S};
+    use axum::routing::get;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const RIGHT: &str = "11111111-1111-4111-8111-111111111111";
+    const WRONG: &str = "22222222-2222-4222-8222-222222222222";
+    fn tracks(lengths: &[i64]) -> serde_json::Value {
+        let titles = ["Morning Glory", "Paper Boats", "Lanterns"];
+        serde_json::Value::Array(
+            lengths
+                .iter()
+                .enumerate()
+                .map(|(i, l)| serde_json::json!({"position": i + 1, "number": (i + 1).to_string(), "title": titles[i], "length": l}))
+                .collect(),
+        )
+    }
+    let hits = Arc::new(AtomicUsize::new(0));
+    let app = Router::new()
+        .route(
+            "/mb/release/",
+            get(
+                |S(h): S<Arc<AtomicUsize>>, Q(q): Q<HashMap<String, String>>| async move {
+                    h.fetch_add(1, Ordering::SeqCst);
+                    let query = q.get("query").cloned().unwrap_or_default();
+                    assert!(
+                        query == "barcode:5012345678900" || query == "The Lanterns Night Songs",
+                        "{query}"
+                    );
+                    axum::Json(serde_json::json!({"releases": [
+                        {"id": WRONG, "title": "Night Songs (Remastered)", "date": "2011", "country": "US",
+                         "artist-credit": [{"name": "The Lanterns"}], "media": [{"format": "CD", "track-count": 3}]},
+                        {"id": RIGHT, "title": "Night Songs", "date": "1998-03-02", "country": "GB",
+                         "artist-credit": [{"name": "The Lanterns"}], "media": [{"format": "CD", "track-count": 3}]},
+                        {"id": "33333333-3333-4333-8333-333333333333", "title": "Night Songs (Deluxe)",
+                         "media": [{"format": "CD", "track-count": 3}, {"format": "CD", "track-count": 9}]}
+                    ]}))
+                },
+            ),
+        )
+        .route(
+            "/mb/release/{id}",
+            get(|S(h): S<Arc<AtomicUsize>>, P(id): P<String>| async move {
+                h.fetch_add(1, Ordering::SeqCst);
+                let (title, lengths): (&str, &[i64]) = match id.as_str() {
+                    RIGHT => ("Night Songs", &[245_000, 181_000, 302_000]),
+                    WRONG => ("Night Songs (Remastered)", &[263_000, 199_000, 321_000]),
+                    _ => return Err(StatusCode::NOT_FOUND),
+                };
+                Ok(axum::Json(serde_json::json!({
+                    "id": id, "title": title, "date": "1998-03-02", "country": "GB",
+                    "artist-credit": [{"name": "The Lanterns"}],
+                    "media": [{"position": 1, "format": "CD", "tracks": tracks(lengths)}]
+                })))
+            }),
+        )
+        .with_state(hits.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}/mb"), hits)
+}
+
+fn ripped_files() -> serde_json::Value {
+    serde_json::json!([
+        {"key": "3", "name": "03 - Lanterns.flac", "track": 3, "title": "Lanterns", "durationMs": 302_400},
+        {"key": "1", "name": "01 - Morning Glory.flac", "track": 1, "title": "Morning Glory", "durationMs": 245_300},
+        {"key": "2", "name": "02 - Paper Boats.flac", "track": 2, "title": "Paper Boats", "durationMs": 180_600}
+    ])
+}
+
+#[tokio::test]
+async fn studio_fills_tracks_from_musicbrainz() {
+    use std::sync::atomic::Ordering;
+    let (url, hits) = mock_musicbrainz().await;
+    let a = app_with(|c| {
+        c.lookup.enabled = true;
+        c.lookup.musicbrainz_url = url;
+        c.lookup.musicbrainz_interval_ms = 0;
+    });
+    let item = a.add("Night Songs", "The Lanterns").await;
+    a.state
+        .db
+        .write_blocking(move |c| {
+            c.execute(
+                "UPDATE items SET identifier = '5012345678900' WHERE id = ?1",
+                [item],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let admin = Some(a.admin_cookie.as_str());
+
+    // The panel is there, prefilled with the artist, title and barcode.
+    let page = a.get(&format!("/admin/items/{item}/media"), true).await;
+    assert!(page.body.contains(r#"id="mb-fill""#), "{}", page.body);
+    assert!(page.body.contains(r#"value="The Lanterns Night Songs""#));
+    assert!(page.body.contains(r#"data-barcode="5012345678900""#));
+
+    // Librarian only.
+    let search_uri = format!("/admin/items/{item}/media/musicbrainz/search");
+    let body = serde_json::json!({"query": "The Lanterns Night Songs", "barcode": "5012345678900", "files": ripped_files()});
+    let locked = a.api("POST", &search_uri, Some(body.clone()), None).await;
+    assert_eq!(locked.status, StatusCode::FORBIDDEN);
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+    // Barcode and text searches, then the closest track lists, ranked by fit:
+    // the right pressing comes first although MusicBrainz listed it second.
+    let r = a.api("POST", &search_uri, Some(body.clone()), admin).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let v = json(&r);
+    let cands = v["candidates"].as_array().unwrap();
+    assert_eq!(cands.len(), 3, "deduplicated: {v}");
+    assert_eq!(cands[0]["title"], "Night Songs");
+    assert_eq!(cands[0]["country"], "GB");
+    assert_eq!(cands[0]["year"], 1998);
+    assert_eq!(cands[0]["discTracks"], serde_json::json!([3]));
+    assert_eq!(cands[0]["totalMs"], 728_000);
+    assert_eq!(cands[0]["fit"]["summary"], "Fits your 3 files");
+    assert_eq!(cands[0]["fit"]["compared"], true);
+    assert_eq!(cands[1]["title"], "Night Songs (Remastered)");
+    assert!(cands[1]["fit"]["score"].as_u64() < cands[0]["fit"]["score"].as_u64());
+    assert_eq!(cands[2]["format"], "2×CD");
+    assert_eq!(
+        cands[2]["fit"]["compared"], false,
+        "its track list answered 404: compared by count only"
+    );
+    assert_eq!(cands[2]["fit"]["summary"], "12 tracks for your 3 files");
+    assert!(
+        cands[0]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://musicbrainz.org/release/")
+    );
+    // 2 searches + 3 track lists (the unknown third answers 404 and is
+    // compared by its count only).
+    assert_eq!(hits.load(Ordering::SeqCst), 5);
+    // Asked again: everything comes from the cache, except the 404.
+    let again = a.api("POST", &search_uri, Some(body), admin).await;
+    assert_eq!(json(&again)["candidates"][0]["title"], "Night Songs");
+    assert_eq!(hits.load(Ordering::SeqCst), 6);
+
+    // Matching the files to the chosen release.
+    let right = cands[0]["id"].as_str().unwrap().to_owned();
+    let m = a
+        .api(
+            "POST",
+            &format!("/admin/items/{item}/media/musicbrainz/match"),
+            Some(serde_json::json!({"release": right, "files": ripped_files()})),
+            admin,
+        )
+        .await;
+    assert_eq!(m.status, StatusCode::OK, "{}", m.body);
+    let m = json(&m);
+    let placed: Vec<(String, i64, String, String)> = m["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| {
+            (
+                x["key"].as_str().unwrap().to_owned(),
+                x["track"].as_i64().unwrap(),
+                x["title"].as_str().unwrap().to_owned(),
+                x["confidence"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        placed,
+        vec![
+            ("3".into(), 3, "Lanterns".into(), "good".into()),
+            ("1".into(), 1, "Morning Glory".into(), "good".into()),
+            ("2".into(), 2, "Paper Boats".into(), "good".into()),
+        ]
+    );
+    assert_eq!(m["missing"], serde_json::json!([]));
+    assert_eq!(m["release"]["media"][0]["tracks"][1]["lengthMs"], 181_000);
+
+    // The release on its own; ids that aren't, and ones MusicBrainz lacks.
+    let rel = a
+        .get(
+            &format!("/admin/items/{item}/media/musicbrainz/release/{right}"),
+            true,
+        )
+        .await;
+    assert_eq!(json(&rel)["title"], "Night Songs");
+    let bad = a
+        .get(
+            &format!("/admin/items/{item}/media/musicbrainz/release/nope"),
+            true,
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::NOT_FOUND);
+    let gone = a
+        .get(
+            &format!(
+                "/admin/items/{item}/media/musicbrainz/release/44444444-4444-4444-8444-444444444444"
+            ),
+            true,
+        )
+        .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+    assert!(
+        gone.body.contains("MusicBrainz has no release"),
+        "{}",
+        gone.body
+    );
+
+    // A pasted MusicBrainz link searches for nothing else.
+    let before = hits.load(Ordering::SeqCst);
+    let linked = a
+        .api(
+            "POST",
+            &search_uri,
+            Some(serde_json::json!({"query": format!("https://musicbrainz.org/release/{right}"), "files": []})),
+            admin,
+        )
+        .await;
+    let linked = json(&linked);
+    assert_eq!(linked["candidates"].as_array().unwrap().len(), 1);
+    assert!(linked["candidates"][0]["fit"].is_null(), "no files, no fit");
+    assert_eq!(hits.load(Ordering::SeqCst), before, "cached");
+
+    // An empty search is refused; a missing item is 404.
+    let empty = a
+        .api(
+            "POST",
+            &search_uri,
+            Some(serde_json::json!({"query": " "})),
+            admin,
+        )
+        .await;
+    assert_eq!(empty.status, StatusCode::BAD_REQUEST);
+    let missing = a
+        .api(
+            "POST",
+            "/admin/items/9999/media/musicbrainz/search",
+            Some(serde_json::json!({"query": "x"})),
+            admin,
+        )
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+
+    // The entry's artist and year are only filled where empty.
+    let filled = a
+        .api(
+            "POST",
+            &format!("/admin/items/{item}/media/musicbrainz/item"),
+            Some(serde_json::json!({"creator": "Somebody Else", "year": 1998})),
+            admin,
+        )
+        .await;
+    assert_eq!(filled.status, StatusCode::OK, "{}", filled.body);
+    assert_eq!(json(&filled)["creator"], "The Lanterns");
+    assert_eq!(json(&filled)["year"], 1998);
+}
+
+#[tokio::test]
+async fn studio_musicbrainz_panel_when_lookups_are_off() {
+    let a = app();
+    let item = a.add("Night Songs", "The Lanterns").await;
+    let page = a.get(&format!("/admin/items/{item}/media"), true).await;
+    assert!(page.body.contains(r#"data-enabled="0""#));
+    assert!(page.body.contains("Online lookups are switched off"));
+    assert!(
+        !page.body.contains(r#"id="mb-query""#),
+        "nothing to search with"
+    );
+    let r = a
+        .api(
+            "POST",
+            &format!("/admin/items/{item}/media/musicbrainz/search"),
+            Some(serde_json::json!({"query": "Night Songs"})),
+            Some(&a.admin_cookie),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert!(json(&r)["error"].as_str().unwrap().contains("switched off"));
+}

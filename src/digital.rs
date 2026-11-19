@@ -54,15 +54,33 @@ pub const ACCEPTED: &[&str] = &[
     "pdf", "epub",
 ];
 
+/// The content type stored for an archive file (kept for the record, only
+/// ever downloaded by the librarian).
+fn archive_mime(ext: &str) -> &'static str {
+    match ext {
+        "log" | "txt" | "cue" | "md5" | "sfv" | "accurip" | "m3u" | "m3u8" => "text/plain",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "zip" => "application/zip",
+        _ => kinds_for(ext)
+            .first()
+            .map_or("application/octet-stream", |(_, mime)| mime),
+    }
+}
+
 /// Decides what an uploaded file is from its name, the kind the browser
 /// guessed (if any) and the content type it sent. Returns the kind and the
-/// content type to store, or a plain-English reason to refuse it.
+/// content type to store, or a plain-English reason to refuse it. Any file
+/// may be kept as an archive file when that kind is asked for.
 pub fn classify(
     name: &str,
     wanted: Option<MediaKind>,
     browser_mime: &str,
 ) -> Result<(MediaKind, &'static str), String> {
     let ext = extension(name).unwrap_or_default();
+    if wanted == Some(MediaKind::Archive) {
+        return Ok((MediaKind::Archive, archive_mime(&ext)));
+    }
     let options = kinds_for(&ext);
     if options.is_empty() {
         return Err(format!(
@@ -84,6 +102,7 @@ pub fn classify(
                 mime.starts_with("audio/") || mime.starts_with("video/")
             }
             MediaKind::Document => mime.starts_with("application/"),
+            MediaKind::Archive => true,
         });
     if !plausible {
         return Err(format!(
@@ -109,6 +128,7 @@ pub fn classify(
                 MediaKind::Audio => "music",
                 MediaKind::Video => "a film",
                 MediaKind::Document => "a document",
+                MediaKind::Archive => "an archive file",
             }
         )),
         (Some(&(kind, mime)), _) => Ok((kind, mime)),
@@ -382,6 +402,26 @@ mod tests {
         assert_eq!(
             classify("book.pdf", Some(MediaKind::Document), "application/pdf"),
             Ok((MediaKind::Document, "application/pdf"))
+        );
+        assert_eq!(
+            classify("rip.log", Some(MediaKind::Archive), "text/plain"),
+            Ok((MediaKind::Archive, "text/plain"))
+        );
+        assert_eq!(
+            classify("rip.json", Some(MediaKind::Archive), ""),
+            Ok((MediaKind::Archive, "application/json"))
+        );
+        assert_eq!(
+            classify("master.mkv", Some(MediaKind::Archive), "video/x-matroska"),
+            Ok((MediaKind::Archive, "video/x-matroska"))
+        );
+        assert_eq!(
+            classify("odd.bin", Some(MediaKind::Archive), ""),
+            Ok((MediaKind::Archive, "application/octet-stream"))
+        );
+        assert!(
+            classify("rip.log", None, "text/plain").is_err(),
+            "only kept as an archive when asked"
         );
         assert!(classify("setup.exe", None, "").is_err());
         assert!(classify("noext", None, "").is_err());

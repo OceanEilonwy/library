@@ -94,7 +94,6 @@ pub fn get(conn: &Connection, id: i64) -> Result<Option<MediaType>> {
         .optional()?)
 }
 
-#[cfg(test)]
 pub fn by_slug(conn: &Connection, slug: &str) -> Result<Option<MediaType>> {
     Ok(conn
         .prepare_cached(&format!("SELECT {COLS} FROM media_types WHERE slug = ?1"))?

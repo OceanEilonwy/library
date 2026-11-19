@@ -543,13 +543,15 @@ pub fn item_page(ctx: &Ctx, v: &ItemView, flash: Option<&str>) -> Markup {
             div.side {
                 (loan_panel(it.id, &it.title, v.loans, None))
                 @if ctx.admin {
+                    @let (playable, archive): (Vec<&MediaFile>, Vec<&MediaFile>) =
+                        v.media.iter().partition(|m| m.kind.playable());
                     section.panel #digital aria-labelledby="digital-title" {
                         h2 #digital-title { "Digital copy" }
-                        @if v.media.is_empty() {
+                        @if playable.is_empty() {
                             p.small.muted { "No files yet. Add the tracks of a CD, a film or a PDF so it can be played in the Player." }
                         } @else {
                             ol.digital-files {
-                                @for m in v.media.iter().take(12) {
+                                @for m in playable.iter().take(12) {
                                     li {
                                         span.mono.small {
                                             @if let Some(t) = m.track { (format!("{t:02}")) } @else { (m.kind.label()) }
@@ -558,10 +560,25 @@ pub fn item_page(ctx: &Ctx, v: &ItemView, flash: Option<&str>) -> Markup {
                                     }
                                 }
                             }
-                            @if v.media.len() > 12 { p.small.muted { "and " (v.media.len() - 12) " more" } }
+                            @if playable.len() > 12 { p.small.muted { "and " (playable.len() - 12) " more" } }
                         }
                         @if it.restricted { p.small.muted { "Restricted: only adult accounts can play these." } }
                         a.btn href={ "/admin/items/" (it.id) "/media" } { "Add or manage files" }
+                    }
+                    @if !archive.is_empty() {
+                        section.panel #archive aria-labelledby="archive-title" {
+                            h2 #archive-title { "Archive files" }
+                            p.small.muted { "Kept for the record (rip logs, cue sheets, checksums). They never appear in the Player." }
+                            ul.digital-files.archive-files {
+                                @for m in &archive {
+                                    li {
+                                        a href={ "/admin/items/" (it.id) "/media/" (m.id) "/download" } download { (m.original_name) }
+                                        " "
+                                        span.small.muted { (crate::views::admin::size_label(m.size_bytes)) }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 @if ctx.admin {

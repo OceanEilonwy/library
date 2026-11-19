@@ -1,0 +1,407 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Library Rip release builds, started by pushing a tag such as `rip-v0.1.0`.
+#
+# A dry run builds and packages everything but publishes nothing: push a
+# branch named `ci/rip-release-<anything>`, or run the workflow by hand
+# (workflow_dispatch, from the default branch). The packages and SHA256SUMS
+# are then only the run's `library-rip-<version>` artifact.
+#
+# Produces, for the GitHub release (with SHA256SUMS):
+#   library-rip-<version>-linux-x86_64.tar.gz    bin/ + the lib/ it needs + licences
+#   library-rip-<version>-linux-x86_64.AppImage  self-contained (linuxdeploy)
+#   library-rip-<version>-windows-x86_64.zip     .exe + the MSYS2 DLLs it needs
+#   library-rip-<version>-macos-arm64.dmg/.zip   app bundle (Apple silicon)
+#   library-rip-<version>-macos-x86_64.dmg/.zip  app bundle (Intel)
+#
+# Each package carries the source of the GPL/LGPL libraries it bundles (and
+# of libFLAC) in a `sources` folder with SOURCES.txt, collected by
+# rip/packaging/collect-sources.sh.
+#
+# Copy the files into the library's `<data_dir>/downloads/library-rip/` so
+# the "Get Library Rip" page offers them.
+#
+# The macOS builds are per architecture rather than universal because the
+# Homebrew libraries they bundle are per architecture. Nothing is signed or
+# notarised yet: on macOS, open the app with right-click → Open the first
+# time; Windows SmartScreen may ask for "More info → Run anyway".
+name: Library Rip release
+
+on:
+  push:
+    tags: ["rip-v*"]
+    branches: ["ci/rip-release-*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rip-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Check the version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          crate=$(sed -n 's/^version = "\(.*\)"$/\1/p' rip/Cargo.toml | head -n1)
+          if [ "$REF_TYPE" = "tag" ]; then
+            tag="${REF_NAME#rip-v}"
+            if [ "$tag" != "$crate" ]; then
+              echo "::error::The tag says $tag but rip/Cargo.toml says $crate. Make them match."
+              exit 1
+            fi
+          fi
+          echo "version=$crate" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Linux x86_64
+    needs: version
+    # The oldest supported runner, so the binary runs on older glibc too.
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libcdio-dev libcdio-paranoia-dev libflac-dev \
+            libfontconfig-dev libxkbcommon-dev libdbus-1-dev \
+            libfuse2 file desktop-file-utils
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rip
+
+      - name: Build
+        working-directory: rip
+        run: cargo build --release --locked --no-default-features --features cdio
+
+      - name: Smoke test
+        run: rip/target/release/library-rip --version
+
+      - name: AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          wget -q -O linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy
+          mkdir -p dist AppDir/usr/share/licenses/library-rip
+          cp LICENSE rip/ui/fonts/*-OFL.txt AppDir/usr/share/licenses/library-rip/
+          cat > library-rip.desktop <<'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=Library Rip
+          Comment=Copy audio CDs into The Library, verified and archived
+          Exec=library-rip
+          Icon=library-rip
+          Categories=AudioVideo;Audio;DiscBurning;
+          Terminal=false
+          DESKTOP
+          desktop-file-validate library-rip.desktop
+          cp rip/ui/icons/library-rip-256.png library-rip.png
+          # D-Bus (for the keyring) is on every Linux desktop; bundling it
+          # would also bundle libsystemd and libgcrypt.
+          ./linuxdeploy \
+            --appdir AppDir \
+            --executable rip/target/release/library-rip \
+            --desktop-file library-rip.desktop \
+            --icon-file library-rip.png \
+            --exclude-library 'libdbus-1.so*'
+          # The source of the libraries just bundled (GPL/LGPL), from
+          # Ubuntu's source packages.
+          codename=$(lsb_release -cs)
+          for suite in "$codename" "$codename-updates" "$codename-security"; do
+            echo "deb-src http://archive.ubuntu.com/ubuntu $suite main universe"
+          done | sudo tee /etc/apt/sources.list.d/library-rip-sources.list
+          sudo apt-get update
+          bash rip/packaging/collect-sources.sh linux AppDir/usr/lib AppDir/usr/share/licenses/library-rip/sources
+          LDAI_OUTPUT="library-rip-$VERSION-linux-x86_64.AppImage" ./linuxdeploy \
+            --appdir AppDir \
+            --output appimage
+          mv "library-rip-$VERSION-linux-x86_64.AppImage" dist/
+
+      # The same files as the AppImage, unpacked: bin/library-rip finds the
+      # libraries linuxdeploy copied into lib/ through its $ORIGIN/../lib
+      # run path, so it does not need the libFLAC or libcdio versions of
+      # whichever distribution it lands on.
+      - name: tar.gz
+        run: |
+          name="library-rip-$VERSION-linux-x86_64"
+          mkdir -p "dist/$name"
+          cp -a AppDir/usr/bin AppDir/usr/lib "dist/$name/"
+          cp -a AppDir/usr/share/licenses/library-rip "dist/$name/licences"
+          cp LICENSE rip/README.md "dist/$name/"
+          env -u LD_LIBRARY_PATH "dist/$name/bin/library-rip" --version
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          rm -rf "dist/$name"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: linux
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows x86_64
+    needs: version
+    runs-on: windows-2022
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      CARGO_HOME: ${{ github.workspace }}/.cargo-home
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+
+      # MSYS2's UCRT64 environment has libcdio, libcdio-paranoia, FLAC,
+      # pkg-config and a Rust toolchain for the GNU target, all built
+      # against the same C runtime.
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            zip
+            mingw-w64-ucrt-x86_64-rust
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-libcdio
+            mingw-w64-ucrt-x86_64-libcdio-paranoia
+            mingw-w64-ucrt-x86_64-flac
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ${{ github.workspace }}/.cargo-home/registry
+            ${{ github.workspace }}/.cargo-home/git
+            rip/target
+          key: rip-release-windows-${{ hashFiles('rip/Cargo.lock') }}
+          restore-keys: rip-release-windows-
+
+      - name: Build
+        working-directory: rip
+        run: cargo build --release --locked --no-default-features --features cdio
+
+      - name: Smoke test
+        run: rip/target/release/library-rip.exe --version
+
+      - name: zip with the DLLs it needs
+        run: |
+          name="library-rip-$VERSION-windows-x86_64"
+          mkdir -p "dist/$name"
+          cp rip/target/release/library-rip.exe "dist/$name/"
+          # Every DLL the program loads from the UCRT64 tree, found
+          # recursively (ldd lists indirect dependencies too).
+          ldd rip/target/release/library-rip.exe \
+            | awk '/\/ucrt64\// { print $3 }' \
+            | sort -u \
+            | xargs -r -I{} cp {} "dist/$name/"
+          ls "dist/$name"
+          # The source of the bundled DLLs (GPL/LGPL), from MSYS2's source
+          # packages.
+          bash rip/packaging/collect-sources.sh windows "dist/$name" "dist/$name/sources"
+          cp LICENSE rip/README.md "dist/$name/"
+          cp rip/ui/fonts/*-OFL.txt "dist/$name/"
+          (cd dist && zip -r -9 "$name.zip" "$name")
+          rm -rf "dist/$name"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: windows
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS ${{ matrix.arch }}
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The bundled Homebrew bottles need at least the macOS they were
+          # built for (Sequoia bottles on Apple silicon, Sonoma on Intel);
+          # the "App bundle" step checks this against `minimum`.
+          - arch: arm64
+            runner: macos-15
+            minimum: "15.0"
+          - arch: x86_64
+            runner: macos-15-intel
+            minimum: "14.0"
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      ARCH: ${{ matrix.arch }}
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.minimum }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install libraries
+        run: brew install pkg-config libcdio libcdio-paranoia flac dylibbundler
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rip
+          key: ${{ matrix.arch }}
+
+      - name: Build
+        working-directory: rip
+        run: cargo build --release --locked --no-default-features --features cdio
+
+      - name: Smoke test
+        run: rip/target/release/library-rip --version
+
+      - name: App bundle
+        run: |
+          app="dist/Library Rip.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"
+          cp rip/target/release/library-rip "$app/Contents/MacOS/"
+          # Copy the Homebrew dylibs in and point the binary at them.
+          dylibbundler -od -b \
+            -x "$app/Contents/MacOS/library-rip" \
+            -d "$app/Contents/Frameworks" \
+            -p @executable_path/../Frameworks/
+          # Icon.
+          iconset=library-rip.iconset
+          mkdir -p "$iconset"
+          for size in 16 32 128 256 512; do
+            sips -z $size $size rip/ui/icons/library-rip-512.png --out "$iconset/icon_${size}x${size}.png" >/dev/null
+            double=$((size * 2))
+            if [ $double -le 512 ]; then
+              sips -z $double $double rip/ui/icons/library-rip-512.png --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+            fi
+          done
+          iconutil -c icns "$iconset" -o "$app/Contents/Resources/library-rip.icns"
+          cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>Library Rip</string>
+            <key>CFBundleDisplayName</key><string>Library Rip</string>
+            <key>CFBundleIdentifier</key><string>org.thelibrary.library-rip</string>
+            <key>CFBundleVersion</key><string>$VERSION</string>
+            <key>CFBundleShortVersionString</key><string>$VERSION</string>
+            <key>CFBundleExecutable</key><string>library-rip</string>
+            <key>CFBundleIconFile</key><string>library-rip</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>LSMinimumSystemVersion</key><string>$MACOSX_DEPLOYMENT_TARGET</string>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>NSHumanReadableCopyright</key><string>AGPL-3.0-or-later</string>
+          </dict>
+          </plist>
+          PLIST
+          plutil -lint "$app/Contents/Info.plist"
+          # Every Mach-O file in the bundle must run on the macOS the app
+          # says it needs.
+          for file in "$app/Contents/MacOS/library-rip" "$app"/Contents/Frameworks/*.dylib; do
+            minos=$(vtool -show-build "$file" | awk '/minos/ { print $2; exit }')
+            echo "$(basename "$file"): minos $minos"
+            if [ -z "$minos" ] || awk -v a="$minos" -v b="$MACOSX_DEPLOYMENT_TARGET" 'BEGIN {
+                split(a, x, "."); split(b, y, ".")
+                exit !(x[1] + 0 > y[1] + 0 || (x[1] + 0 == y[1] + 0 && x[2] + 0 > y[2] + 0))
+              }'; then
+              echo "::error::$(basename "$file") needs macOS $minos, newer than $MACOSX_DEPLOYMENT_TARGET"
+              exit 1
+            fi
+          done
+          cp LICENSE rip/ui/fonts/*-OFL.txt "$app/Contents/Resources/"
+          # The source of the bundled dylibs (GPL), from Homebrew.
+          bash rip/packaging/collect-sources.sh macos "$app/Contents/Frameworks" "$app/Contents/Resources/sources"
+          # Ad-hoc signature: needed on Apple silicon after changing the
+          # binary's library paths. Not a Developer ID signature.
+          codesign --force --deep --sign - "$app"
+
+      - name: dmg and zip
+        run: |
+          name="library-rip-$VERSION-macos-$ARCH"
+          cp LICENSE dist/
+          ln -s /Applications dist/Applications
+          # hdiutil sometimes fails with "Resource busy" on CI; try again.
+          for attempt in 1 2 3; do
+            if hdiutil create -volname "Library Rip" -srcfolder dist -ov -format UDZO "$name.dmg"; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep 10
+          done
+          (cd dist && ditto -c -k --keepParent "Library Rip.app" "../$name.zip")
+          rm -rf dist
+          mkdir dist
+          mv "$name.dmg" "$name.zip" dist/
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: macos-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  checksums:
+    name: Collect the packages and SHA256SUMS
+    needs: [version, linux, windows, macos]
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: SHA256SUMS
+        working-directory: artifacts
+        run: |
+          sha256sum library-rip-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: library-rip-${{ needs.version.outputs.version }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  # Only for `rip-v*` tags: dry runs stop at the artifact above.
+  release:
+    name: Publish the release
+    needs: [version, checksums]
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'rip-v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: library-rip-${{ needs.version.outputs.version }}
+          path: artifacts
+
+      - name: Check SHA256SUMS
+        working-directory: artifacts
+        run: sha256sum --check SHA256SUMS
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          name: Library Rip ${{ needs.version.outputs.version }}
+          body: |
+            Library Rip ${{ needs.version.outputs.version }}: archival audio CD ripper for The Library.
+
+            Check downloads against SHA256SUMS. Source code: this repository (AGPL-3.0-or-later).
+          files: artifacts/*
+          fail_on_unmatched_files: true

@@ -33,10 +33,24 @@ pub struct Config {
     /// Directory holding hand-drawn art (hero.png, margin-left.png, …).
     /// Defaults to `<data_dir>/art`.
     pub art_dir: Option<PathBuf>,
+    /// Where this program's source code can be had (the AGPL asks a server
+    /// to offer it to everyone who uses it over a network). Linked from the
+    /// footer of every page, the Player and Library Rip.
+    pub source_url: String,
     pub semantic: SemanticConfig,
     pub lookup: LookupConfig,
     pub accounts: AccountsConfig,
     pub media: MediaConfig,
+    pub ripper: RipperConfig,
+}
+
+/// Library Rip, the desktop disc ripper (docs/rip.md).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RipperConfig {
+    /// Folder of Library Rip builds offered on `/ripper`. Defaults to
+    /// `<data_dir>/downloads/library-rip`.
+    pub downloads_dir: Option<PathBuf>,
 }
 
 /// Player accounts.
@@ -124,13 +138,18 @@ impl Default for Config {
             site_password: None,
             default_title: "The Library".into(),
             art_dir: None,
+            source_url: DEFAULT_SOURCE_URL.into(),
             semantic: SemanticConfig::default(),
             lookup: LookupConfig::default(),
             accounts: AccountsConfig::default(),
             media: MediaConfig::default(),
+            ripper: RipperConfig::default(),
         }
     }
 }
+
+/// Where the library's source code lives unless `source_url` says otherwise.
+pub const DEFAULT_SOURCE_URL: &str = "https://github.com/OceanEilonwy/library";
 
 impl Default for SemanticConfig {
     fn default() -> Self {
@@ -181,7 +200,7 @@ impl Config {
 
     /// Overrides from the environment (empty values are ignored):
     /// `LIBRARY_ADMIN_PASSWORD_HASH`, `LIBRARY_ADMIN_PASSWORD`, `LIBRARY_SITE_PASSWORD`,
-    /// `LIBRARY_TITLE`, `LIBRARY_TMDB_TOKEN`, `LIBRARY_LOOKUP_CONTACT`,
+    /// `LIBRARY_TITLE`, `LIBRARY_SOURCE_URL`, `LIBRARY_TMDB_TOKEN`, `LIBRARY_LOOKUP_CONTACT`,
     /// `LIBRARY_SEMANTIC` and `LIBRARY_LOOKUPS` (on/off).
     pub fn apply_env(&mut self, get: impl Fn(&str) -> Option<String>) {
         let get = |k: &str| get(k).filter(|v| !v.trim().is_empty());
@@ -202,6 +221,9 @@ impl Config {
         }
         if let Some(v) = get("LIBRARY_TITLE") {
             self.default_title = v;
+        }
+        if let Some(v) = get("LIBRARY_SOURCE_URL") {
+            self.source_url = v;
         }
         if let Some(v) = get("LIBRARY_TMDB_TOKEN") {
             self.lookup.tmdb_token = Some(v);
@@ -243,6 +265,14 @@ impl Config {
     pub fn secret_path(&self) -> PathBuf {
         self.data_dir.join("session.key")
     }
+
+    /// Where Library Rip builds offered on `/ripper` are kept.
+    pub fn ripper_downloads_dir(&self) -> PathBuf {
+        self.ripper
+            .downloads_dir
+            .clone()
+            .unwrap_or_else(|| self.data_dir.join("downloads").join("library-rip"))
+    }
 }
 
 #[cfg(test)]
@@ -260,6 +290,32 @@ mod tests {
         assert_eq!(cfg.accounts.default_access, Access::Child);
         assert!(cfg.accounts.open_registration);
         assert_eq!(cfg.media.max_upload_mb, 20_000);
+        assert_eq!(cfg.source_url, DEFAULT_SOURCE_URL);
+        assert_eq!(
+            cfg.ripper_downloads_dir(),
+            PathBuf::from("data/downloads/library-rip")
+        );
+    }
+
+    #[test]
+    fn ripper_and_source_parse() {
+        let cfg = Config::parse(
+            r#"
+            source_url = "https://git.example.org/library"
+            [ripper]
+            downloads_dir = "/srv/rip-builds"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.source_url, "https://git.example.org/library");
+        assert_eq!(cfg.ripper_downloads_dir(), PathBuf::from("/srv/rip-builds"));
+        assert!(
+            Config::parse(
+                "[ripper]
+builds = 1"
+            )
+            .is_err()
+        );
     }
 
     #[test]

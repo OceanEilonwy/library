@@ -63,6 +63,8 @@ export type ItemQuery = {
   limit?: number;
 };
 export type ItemPage = { items: ItemSummary[]; total: number };
+/** `GET /api/info`: the library's title, the server version and where its source code is. */
+export type ServerInfo = { name: string; version: string; sourceUrl: string };
 
 /** What went wrong, in terms the interface reacts to. */
 export type ApiErrorKind =
@@ -207,6 +209,7 @@ export function createApiClient(options: ApiClientOptions = {}) {
     login: (input: { login: string; password: string }) => request<Account>('POST', '/api/account/login', input, false),
     logout: () => request<void>('POST', '/api/account/logout', undefined, false),
     me: () => request<Account>('GET', '/api/account/me', undefined, false),
+    info: () => request<ServerInfo>('GET', '/api/info', undefined, false),
 
     items: (query: ItemQuery = {}) =>
       request<ItemPage>(

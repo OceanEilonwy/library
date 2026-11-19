@@ -21,6 +21,12 @@ default_title = "The Library"
 # Hand-drawn art. Defaults to <data_dir>/art. See README for file names.
 # art_dir = "/var/lib/library/art"
 
+# Where this program's source code can be had. The library is free software
+# under the GNU AGPL: if you change it and let others use it over a network,
+# point this at your own changed copy. Linked from every page's footer, the
+# Player and Library Rip.
+# source_url = "https://github.com/OceanEilonwy/library"
+
 [semantic]
 # Meaning-based search with a small local model (~130 MB, CPU only).
 enabled = true
@@ -52,3 +58,9 @@ open_registration = true
 # Largest single file the upload studio accepts, in megabytes. Remember to
 # let big uploads through your reverse proxy too (see deploy/Caddyfile).
 max_upload_mb = 20000
+
+[ripper]
+# Library Rip builds offered on /ripper ("Get Library Rip"). Copy the files
+# from a release (AppImage, .tar.gz, .zip, .dmg) here; the page lists each
+# with its size and SHA-256. Defaults to <data_dir>/downloads/library-rip.
+# downloads_dir = "/var/lib/library/downloads/library-rip"

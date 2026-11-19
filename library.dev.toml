@@ -28,3 +28,6 @@ open_registration = true
 
 [media]
 max_upload_mb = 2000
+
+[ripper]
+# Library Rip builds for /ripper go in ./data-dev/downloads/library-rip.

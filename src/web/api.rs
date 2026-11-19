@@ -214,6 +214,32 @@ fn looker(who: &SignedIn) -> Looker {
     }
 }
 
+// ---------- about the library ----------
+
+/// `GET /api/info` (no account needed): the library's name, the server's
+/// version and where its source code is (the AGPL's offer, linked from the
+/// Player's about screen).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InfoJson {
+    pub name: String,
+    pub version: String,
+    pub source_url: String,
+}
+
+pub async fn info(State(st): State<AppState>) -> ApiResult<Json<InfoJson>> {
+    let default_title = st.cfg.default_title.clone();
+    let name = st
+        .db
+        .read(move |c| Ok(crate::db::settings::branding(c, &default_title)?.title))
+        .await?;
+    Ok(Json(InfoJson {
+        name,
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        source_url: st.cfg.source_url.clone(),
+    }))
+}
+
 // ---------- catalogue ----------
 
 #[derive(Debug, Default, Deserialize)]
@@ -239,9 +265,13 @@ pub async fn items(
 ) -> ApiResult<Json<ItemListJson>> {
     let kind = match p.kind.trim() {
         "" => None,
-        k => Some(MediaKind::parse(k).ok_or_else(|| {
-            ApiError::BadRequest("Kind should be audio, video or document.".into())
-        })?),
+        k => Some(
+            MediaKind::parse(k)
+                .filter(|k| k.playable())
+                .ok_or_else(|| {
+                    ApiError::BadRequest("Kind should be audio, video or document.".into())
+                })?,
+        ),
     };
     let query = CatalogueQuery {
         q: Some(p.q.chars().take(200).collect()),
@@ -281,7 +311,7 @@ pub async fn item(
             let Some(row) = media_files::catalogue(c, &query)?.0.pop() else {
                 return Ok(None);
             };
-            let files = media_files::for_item(c, id)?;
+            let files = media_files::playable_for_item(c, id)?;
             let media = media_list_json(c, &files)?;
             let (summary, description) = summary_json(row);
             Ok(Some(ItemDetailJson {

@@ -1,0 +1,175 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Library Rip: formatting, lints and tests for changes under rip/, on Linux,
+# Windows and macOS.
+name: Library Rip CI
+
+on:
+  pull_request:
+    paths:
+      - "rip/**"
+      # tests/e2e_headless.rs runs the ripper against the real server.
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "library.dev.toml"
+      - ".github/workflows/rip-ci.yml"
+  push:
+    # `ci/rip-*` branches are scratch branches for trying CI changes
+    # without a pull request.
+    branches: [main, "ci/rip-*"]
+    paths:
+      - "rip/**"
+      # tests/e2e_headless.rs runs the ripper against the real server.
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "library.dev.toml"
+      - ".github/workflows/rip-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rip-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt, clippy, test (Linux)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: rip
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system libraries
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libcdio-dev libcdio-paranoia-dev libflac-dev \
+            libfontconfig-dev libxkbcommon-dev libdbus-1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # tests/licences.rs runs `cargo deny check licenses` when it is there.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # rip/ itself, and the root server that tests/e2e_headless.rs
+          # builds and starts.
+          workspaces: |
+            rip
+            .
+
+      - name: Formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Tests (including the end-to-end rip against the real server)
+        run: cargo test --locked
+
+      - name: Build without libcdio or the test tools
+        run: cargo check --locked --no-default-features
+
+      # Release builds (rip-release.yml) use these features: the test tools
+      # (`testsupport`: --fake-disc, headless, make-fake-disc,
+      # mock-services) must not be in them.
+      - name: Builds without testsupport have no test commands
+        run: |
+          cargo build --locked --no-default-features --features cdio
+          ./target/debug/library-rip --help
+          for command in make-fake-disc mock-services headless; do
+            if ./target/debug/library-rip "$command" --help; then
+              echo "::error::$command is in a build without testsupport"
+              exit 1
+            fi
+          done
+          if ./target/debug/library-rip --fake-disc /tmp --help; then
+            echo "::error::--fake-disc is in a build without testsupport"
+            exit 1
+          fi
+
+  # Windows and macOS: clippy and the tests, with the same libraries as the
+  # release builds. The end-to-end test (which builds the whole server) runs
+  # on Linux only.
+  windows:
+    name: clippy, test (Windows)
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+        working-directory: rip
+    env:
+      LIBRARY_RIP_SKIP_E2E: "1"
+      CARGO_HOME: ${{ github.workspace }}/.cargo-home
+    steps:
+      - uses: actions/checkout@v5
+
+      # The same MSYS2 UCRT64 toolchain and libraries as rip-release.yml.
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-rust
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-libcdio
+            mingw-w64-ucrt-x86_64-libcdio-paranoia
+            mingw-w64-ucrt-x86_64-flac
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ${{ github.workspace }}/.cargo-home/registry
+            ${{ github.workspace }}/.cargo-home/git
+            rip/target
+          key: rip-ci-windows-${{ hashFiles('rip/Cargo.lock') }}
+          restore-keys: rip-ci-windows-
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked
+
+  macos:
+    name: clippy, test (macOS)
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: rip
+    env:
+      LIBRARY_RIP_SKIP_E2E: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install libraries
+        working-directory: .
+        run: brew install pkg-config libcdio libcdio-paranoia flac
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rip
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked

@@ -5,3 +5,4 @@ library.toml
 /player/dist
 /player/node_modules
 /data-dev
+/rip/target*

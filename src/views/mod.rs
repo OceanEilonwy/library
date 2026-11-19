@@ -3,6 +3,7 @@
 
 pub mod admin;
 pub mod public;
+pub mod rip;
 
 use maud::{DOCTYPE, Markup, html};
 
@@ -29,6 +30,8 @@ pub struct Ctx {
     pub art: Art,
     /// Path and query of this request, for "come back here" links.
     pub here: String,
+    /// Where the source code is (the AGPL's offer), linked in the footer.
+    pub source_url: String,
 }
 
 pub enum Header {
@@ -81,7 +84,10 @@ pub fn page(ctx: &Ctx, title: &str, header: Header, body: Markup) -> Markup {
                     main #main { (body) }
                     footer.site {
                         span { (ctx.branding.title) }
-                        @if ctx.admin { a href="/admin" { "Librarian's desk" } }
+                        span.footer-links {
+                            @if ctx.admin { a href="/admin" { "Librarian's desk" } }
+                            a href=(ctx.source_url) rel="noopener" { "Source code" }
+                        }
                     }
                 }
             }

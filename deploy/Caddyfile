@@ -2,7 +2,11 @@
 # Make a password hash with:  caddy hash-password
 library.example.org {
 	encode zstd gzip
-	basic_auth {
+	# Library Rip sends its own key (Authorization: Bearer …) to /api/rip/,
+	# so that path can't also carry this password; the library checks the
+	# key itself.
+	@people not path /api/rip/*
+	basic_auth @people {
 		family $2a$14$REPLACE_WITH_OUTPUT_OF_caddy_hash-password
 	}
 	# Photos can be large, and digital copies (films, whole albums) much

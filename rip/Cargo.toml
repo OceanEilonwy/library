@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "library-rip"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-or-later"
+description = "Library Rip: archival disc ripper for The Library (secure audio CD rips, verified, uploaded)."
+repository = "https://github.com/OceanEilonwy/library"
+build = "build.rs"
+
+[lib]
+name = "library_rip"
+path = "src/lib.rs"
+
+[[bin]]
+name = "library-rip"
+path = "src/main.rs"
+
+[features]
+default = ["cdio"]
+# Real drives through libcdio + libcdio-paranoia (GPLv3). Without it only the
+# simulated drive (FakeDrive) is available.
+cdio = []
+# Test tools, never in release builds: the simulated-disc generator and
+# stand-in services (`testsupport`, `mockservices` modules) and the
+# `--fake-disc`, `headless`, `make-fake-disc` and `mock-services` commands.
+# `cargo test` turns it on by itself through the dev-dependency on this
+# package below; `cargo build` / `cargo build --release` leave it off.
+testsupport = []
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query", "json"] }
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+crc32fast = "1"
+directories = "6"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+hostname = "0.4"
+jiff = { version = "0.2", features = ["serde"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+open = "5"
+quick-xml = { version = "0.38", features = ["serialize"] }
+rand = "0.9"
+rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "stream", "rustls-tls-webpki-roots"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+slint = "1.19"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "io-util", "sync", "time", "process", "signal"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = { version = "2", features = ["serde"] }
+
+[build-dependencies]
+pkg-config = "0.3"
+slint-build = "1.19"
+
+[dev-dependencies]
+axum = { version = "0.8", features = ["multipart", "macros"] }
+# This package itself with its test tools, so the integration tests (and the
+# `library-rip` binary they run) get `testsupport` without extra flags.
+library-rip = { path = ".", default-features = false, features = ["testsupport"] }
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

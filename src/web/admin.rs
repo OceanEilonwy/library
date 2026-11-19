@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 use super::{Admin, AppError, AppState, Fields, Res, Viewer, html, html_status, see_other};
 use crate::db::accounts::{self, Access};
+use crate::db::api_keys;
 use crate::db::items::{self, Invalid, ItemInput};
 use crate::db::types::{self, FieldKind, FieldScope, Lookup, NewType};
 use crate::db::{locations, media_files, photos, settings};
@@ -712,7 +713,7 @@ pub async fn desk(
         (true, true) if st.semantic.is_indexing() => "indexing",
         (true, true) => "ready",
     };
-    let (count, out, pending, places, types_fields, tagline, waiting) = st
+    let (count, out, pending, places, types_fields, tagline, waiting, rippers) = st
         .db
         .read(|c| {
             let count = items::count(c)?;
@@ -734,13 +735,17 @@ pub async fn desk(
             }
             let tagline = settings::get(c, settings::TAGLINE)?;
             let waiting = accounts::pending_count(c)?;
-            Ok((count, out, pending, places, tf, tagline, waiting))
+            let rippers = api_keys::active(c)?;
+            Ok((count, out, pending, places, tf, tagline, waiting, rippers))
         })
         .await?;
     let flash = match p.msg.as_str() {
         "saved" => Some("Saved."),
         "renamed" => Some("Renamed."),
         "removed" => Some("Removed."),
+        "disconnected" => {
+            Some("Disconnected. That computer can't upload any more until it is connected again.")
+        }
         "" => None,
         other if other.starts_with("err:") => Some(&other[4..]),
         _ => None,
@@ -759,6 +764,7 @@ pub async fn desk(
             places: &places,
             types: &types_fields,
             accounts_waiting: waiting,
+            rippers: &rippers,
             flash,
         },
     )))

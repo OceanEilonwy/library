@@ -2,6 +2,7 @@
 //! lets them run alongside the writer), all used from blocking threads.
 
 pub mod accounts;
+pub mod api_keys;
 pub mod favourites;
 pub mod items;
 pub mod loans;
@@ -20,6 +21,7 @@ use rusqlite::{Connection, OpenFlags};
 
 const SCHEMA_V1: &str = include_str!("schema.sql");
 const SCHEMA_V2: &str = include_str!("schema_v2.sql");
+const SCHEMA_V3: &str = include_str!("schema_v3.sql");
 const READER_POOL_MAX: usize = 8;
 
 /// Registers sqlite-vec with every connection opened afterwards.
@@ -169,6 +171,30 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         tx.commit()?;
         tracing::info!("database schema upgraded to version 2 (accounts and digital copies)");
     }
+    if version < 3 {
+        // media_files is rebuilt: with foreign keys on, dropping the old
+        // table would delete every subtitle, playlist entry and favourite
+        // pointing at it. The pragma only takes effect outside a
+        // transaction, so it is switched off around it.
+        conn.pragma_update(None, "foreign_keys", false)?;
+        let upgraded = (|| -> Result<()> {
+            let tx = conn.transaction()?;
+            tx.execute_batch(SCHEMA_V3).context("applying schema v3")?;
+            let broken: i64 =
+                tx.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+                    r.get(0)
+                })?;
+            if broken > 0 {
+                anyhow::bail!("schema v3 would leave {broken} broken references; not applied");
+            }
+            tx.pragma_update(None, "user_version", 3)?;
+            tx.commit()?;
+            Ok(())
+        })();
+        conn.pragma_update(None, "foreign_keys", true)?;
+        upgraded?;
+        tracing::info!("database schema upgraded to version 3 (Library Rip)");
+    }
     Ok(())
 }
 
@@ -261,7 +287,7 @@ mod tests {
         let v: i64 = db
             .read_blocking(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
             .unwrap();
-        assert_eq!(v, 2);
+        assert_eq!(v, 3);
     }
 
     #[test]
@@ -302,9 +328,66 @@ mod tests {
                 ))
             })
             .unwrap();
-        assert_eq!(v, 2);
+        assert_eq!(v, 3);
         assert_eq!(restricted, 0, "existing items are not restricted");
         assert_eq!(tables, 7);
+    }
+
+    #[test]
+    fn version_2_database_upgrades_and_keeps_its_files_and_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v2.sqlite3");
+        {
+            // A database as version 2 left it: an item with a file that has
+            // subtitles, a favourite and a playlist entry.
+            register_vec_extension();
+            let mut c = open_connection(&path, false).unwrap();
+            let tx = c.transaction().unwrap();
+            tx.execute_batch(SCHEMA_V1).unwrap();
+            tx.execute_batch(SCHEMA_V2).unwrap();
+            tx.pragma_update(None, "user_version", 2).unwrap();
+            tx.execute_batch(
+                "INSERT INTO items (id, type_id, title, created_at, updated_at) VALUES (1, 1, 'Blue', 1, 1);
+                 INSERT INTO media_files (id, item_id, kind, title, disc, track, file, original_name,
+                                          mime, size_bytes, duration_ms, position, created_at)
+                     VALUES (5, 1, 'video', 'Blue', 1, NULL, 'a.mp4', 'Blue.mp4', 'video/mp4', 10, 1000, 0, 1);
+                 INSERT INTO subtitles (media_file_id, language, label, file, created_at)
+                     VALUES (5, 'en', 'English', 'a.vtt', 1);
+                 INSERT INTO accounts (id, username, email, password_hash, status, created_at)
+                     VALUES (1, 'a', 'a@example.test', 'x', 'approved', 1);
+                 INSERT INTO favourites (account_id, media_file_id, created_at) VALUES (1, 5, 1);
+                 INSERT INTO playlists (id, account_id, name, created_at, updated_at) VALUES (1, 1, 'P', 1, 1);
+                 INSERT INTO playlist_entries (playlist_id, media_file_id, position) VALUES (1, 5, 0);",
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let counts = db
+            .write_blocking(|c| {
+                let one = |sql: &str| -> Result<i64> { Ok(c.query_row(sql, [], |r| r.get(0))?) };
+                let counts = [
+                    one("PRAGMA user_version")?,
+                    one("SELECT count(*) FROM media_files WHERE id = 5 AND sha256 IS NULL")?,
+                    one("SELECT count(*) FROM subtitles")?,
+                    one("SELECT count(*) FROM favourites")?,
+                    one("SELECT count(*) FROM playlist_entries")?,
+                    one("SELECT count(*) FROM api_keys")?,
+                    one("PRAGMA foreign_keys")?,
+                ];
+                // The new kind is accepted, and deleting still cascades.
+                c.execute(
+                    "INSERT INTO media_files (item_id, kind, title, file, original_name, mime, size_bytes, created_at)
+                     VALUES (1, 'archive', 'Rip log', 'b.log', 'b.log', 'text/plain', 1, 1)",
+                    [],
+                )?;
+                c.execute("DELETE FROM media_files WHERE id = 5", [])?;
+                let after = one("SELECT count(*) FROM subtitles")? + one("SELECT count(*) FROM favourites")?;
+                Ok((counts, after))
+            })
+            .unwrap();
+        assert_eq!(counts.0, [3, 1, 1, 1, 1, 0, 1]);
+        assert_eq!(counts.1, 0, "foreign keys still cascade after the rebuild");
     }
 
     #[test]

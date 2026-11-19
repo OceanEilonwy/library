@@ -56,6 +56,8 @@ const REGISTERED: &str = "Thanks! A librarian needs to approve your account befo
 #[derive(Debug)]
 pub enum ApiError {
     Unauthorized,
+    /// 401 for Library Rip: no API key, or one that was revoked.
+    BadKey,
     WrongPassword,
     /// The password was right but no librarian has approved the account.
     AwaitingApproval,
@@ -96,6 +98,19 @@ impl IntoResponse for ApiError {
                 "Please sign in first.".to_owned(),
                 None,
             ),
+            ApiError::BadKey => {
+                let body = ErrorBody {
+                    error: "This computer isn't connected to the library. Connect it again from Library Rip."
+                        .to_owned(),
+                    fields: None,
+                };
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    [(header::WWW_AUTHENTICATE, "Bearer")],
+                    Json(body),
+                )
+                    .into_response();
+            }
             ApiError::WrongPassword => (
                 StatusCode::UNAUTHORIZED,
                 "That username or password isn't right.".to_owned(),

@@ -4,9 +4,11 @@ pub mod accounts;
 pub mod admin;
 pub mod api;
 pub mod auth;
+pub mod connect;
 pub mod fill;
 pub mod player;
 pub mod public;
+pub mod rip;
 pub mod stream;
 pub mod studio;
 #[cfg(test)]
@@ -49,6 +51,8 @@ pub struct AppState {
     pub auth: Arc<Auth>,
     pub art: Arc<ArtCache>,
     pub throttles: Arc<accounts::Throttles>,
+    /// Library Rip's connect handshakes (in memory).
+    pub rip: Arc<rip::RipState>,
 }
 
 impl AppState {
@@ -67,6 +71,7 @@ impl AppState {
             asset_version: asset_version(),
             art: self.art.get(),
             here: viewer.here.clone(),
+            source_url: self.cfg.source_url.clone(),
         })
     }
 
@@ -87,6 +92,7 @@ fn api_routes() -> Router<AppState> {
         .route("/api/account/login", post(accounts::login))
         .route("/api/account/logout", post(accounts::logout))
         .route("/api/account/me", get(accounts::me))
+        .route("/api/info", get(api::info))
         .route("/api/items", get(api::items))
         .route("/api/items/{id}", get(api::item))
         .route("/api/media/check", post(api::check))
@@ -151,6 +157,8 @@ pub fn router(state: AppState) -> Router {
         .route("/player", get(player::redirect_to_root))
         .route("/player/", get(player::root))
         .route("/player/{*path}", get(player::file))
+        .merge(connect::routes())
+        .merge(rip::routes())
         .merge(api_routes())
         .merge(admin)
         .layer(DefaultBodyLimit::max(64 << 10))
@@ -398,6 +406,9 @@ enum Zone {
     Player,
     /// Media streams, which the Player may show in a frame (PDFs).
     Stream,
+    /// The connect page, whose form ends in a redirect to Library Rip's
+    /// listener on this computer.
+    Connect,
 }
 
 impl Zone {
@@ -406,6 +417,8 @@ impl Zone {
             Zone::Player
         } else if path.starts_with("/api/media/") && path.ends_with("/stream") {
             Zone::Stream
+        } else if path == "/connect" {
+            Zone::Connect
         } else {
             Zone::Site
         }
@@ -420,12 +433,19 @@ fn csp(zone: Zone) -> &'static HeaderValue {
     static SITE: OnceLock<HeaderValue> = OnceLock::new();
     static PLAYER: OnceLock<HeaderValue> = OnceLock::new();
     static STREAM: OnceLock<HeaderValue> = OnceLock::new();
+    static CONNECT: OnceLock<HeaderValue> = OnceLock::new();
     let build = |zone: Zone| {
         use base64::Engine;
         let hash = base64::engine::general_purpose::STANDARD
             .encode(Sha256::digest(views::CRITICAL_CSS.as_bytes()));
+        // Browsers apply form-action to where a form's answer redirects,
+        // and Yes/No on /connect redirect to the ripper's loopback listener.
+        let form_action = match zone {
+            Zone::Connect => "'self' http://127.0.0.1:* http://localhost:*",
+            Zone::Site | Zone::Player | Zone::Stream => "'self'",
+        };
         let (style, extra, ancestors) = match zone {
-            Zone::Site => (format!("'self' 'sha256-{hash}'"), "", "'none'"),
+            Zone::Site | Zone::Connect => (format!("'self' 'sha256-{hash}'"), "", "'none'"),
             Zone::Player => (
                 "'self' 'unsafe-inline'".to_owned(),
                 " worker-src 'self'; manifest-src 'self'; frame-src 'self';",
@@ -438,7 +458,7 @@ fn csp(zone: Zone) -> &'static HeaderValue {
         let policy = format!(
             "default-src 'self'; img-src 'self' data: blob:; style-src {style}; \
              script-src 'self'; font-src 'self'; connect-src 'self'; media-src 'self' blob:;{extra} \
-             object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors {ancestors}"
+             object-src 'none'; base-uri 'self'; form-action {form_action}; frame-ancestors {ancestors}"
         );
         HeaderValue::from_str(&policy)
             .unwrap_or_else(|_| HeaderValue::from_static("default-src 'self'"))
@@ -447,6 +467,7 @@ fn csp(zone: Zone) -> &'static HeaderValue {
         Zone::Site => SITE.get_or_init(|| build(Zone::Site)),
         Zone::Player => PLAYER.get_or_init(|| build(Zone::Player)),
         Zone::Stream => STREAM.get_or_init(|| build(Zone::Stream)),
+        Zone::Connect => CONNECT.get_or_init(|| build(Zone::Connect)),
     }
 }
 
@@ -482,12 +503,16 @@ async fn security_headers(req: Request, next: Next) -> Response {
 }
 
 /// The optional site password: when configured, every request but the
-/// health check needs HTTP basic auth with that password (any user name).
+/// health check and the rip API needs HTTP basic auth with that password
+/// (any user name). The rip API has its own keys and one-time codes, and
+/// Library Rip's `Authorization: Bearer` header can't carry a password too.
 async fn site_password(State(st): State<AppState>, req: Request, next: Next) -> Response {
     let Some(expected) = st.cfg.site_password.as_deref() else {
         return next.run(req).await;
     };
-    if req.uri().path() == "/healthz" || basic_auth_ok(req.headers(), expected) {
+    let path = req.uri().path();
+    if path == "/healthz" || path.starts_with("/api/rip/") || basic_auth_ok(req.headers(), expected)
+    {
         return next.run(req).await;
     }
     (
@@ -569,6 +594,70 @@ pub fn is_https(h: &HeaderMap) -> bool {
         || h.get(header::ORIGIN)
             .and_then(|v| v.to_str().ok())
             .is_some_and(|o| o.starts_with("https://"))
+}
+
+// ---------- client address ----------
+
+/// The address a request came from, for per-client rate limits.
+///
+/// The library is meant to listen on localhost behind a reverse proxy
+/// (`deploy/Caddyfile`), so `X-Forwarded-For` is believed only when the
+/// connection itself comes from this computer (the proxy), and then only
+/// its last entry, the one the proxy added (anything before it was sent by
+/// the client and could be made up). A connection from anywhere else is
+/// keyed by its own address, whatever headers it sends. `None` when the
+/// server was started without connection info (unit tests).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientIp(pub Option<std::net::IpAddr>);
+
+impl ClientIp {
+    /// Works out the client from the TCP peer and the request headers.
+    pub fn from_parts(peer: Option<std::net::SocketAddr>, headers: &HeaderMap) -> Self {
+        let Some(peer) = peer else {
+            return ClientIp(None);
+        };
+        if !peer.ip().is_loopback() {
+            return ClientIp(Some(peer.ip()));
+        }
+        let forwarded = headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(','))
+            .map(str::trim)
+            .rfind(|v| !v.is_empty())
+            .and_then(parse_forwarded_ip);
+        ClientIp(Some(forwarded.unwrap_or(peer.ip())))
+    }
+
+    /// The key to count this client's hits under.
+    pub fn key(&self) -> String {
+        match self.0 {
+            Some(ip) => ip.to_string(),
+            None => "unknown".to_owned(),
+        }
+    }
+}
+
+/// An address as proxies write it: `1.2.3.4`, `1.2.3.4:5678`, `::1` or
+/// `[::1]:5678`.
+fn parse_forwarded_ip(value: &str) -> Option<std::net::IpAddr> {
+    value
+        .parse::<std::net::IpAddr>()
+        .ok()
+        .or_else(|| value.parse::<std::net::SocketAddr>().ok().map(|a| a.ip()))
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for ClientIp {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
+        let peer = parts
+            .extensions
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|info| info.0);
+        Ok(ClientIp::from_parts(peer, &parts.headers))
+    }
 }
 
 // ---------- static files ----------

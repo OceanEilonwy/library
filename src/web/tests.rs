@@ -52,6 +52,7 @@ fn app_with(tweak: impl FnOnce(&mut Config)) -> App {
         candidates: Arc::new(CandidateCache::default()),
         auth: Arc::new(auth),
         throttles: Arc::new(accounts::Throttles::default()),
+        rip: Arc::new(rip::RipState::default()),
     };
     App {
         router: router(state.clone()),
@@ -930,6 +931,7 @@ impl App {
         let (ext, mime) = match kind {
             "video" => ("mp4", "video/mp4"),
             "document" => ("pdf", "application/pdf"),
+            "archive" => ("log", "text/plain"),
             _ => ("mp3", "audio/mpeg"),
         };
         let file = crate::digital::random_name(ext);
@@ -947,6 +949,7 @@ impl App {
             mime: mime.into(),
             size_bytes: bytes.len() as i64,
             duration_ms: Some(60_000),
+            sha256: None,
         };
         self.state
             .db
@@ -2524,4 +2527,1481 @@ async fn studio_musicbrainz_panel_when_lookups_are_off() {
         .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
     assert!(json(&r)["error"].as_str().unwrap().contains("switched off"));
+}
+
+// ---------- Library Rip: connecting, the rip API, archive files ----------
+
+/// The RFC 7636 example verifier and its S256 challenge.
+const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+const REDIRECT: &str = "http://127.0.0.1:53682/callback";
+
+fn connect_query(redirect: &str, state: &str) -> String {
+    format!(
+        "client=library-rip&name={}&redirect_uri={}&state={state}&code_challenge={CHALLENGE}&code_challenge_method=S256",
+        crate::views::urlencode("Henry's desktop"),
+        crate::views::urlencode(redirect),
+    )
+}
+
+/// The value of one query parameter in a URL.
+fn query_param(url: &str, key: &str) -> Option<String> {
+    let query = url.split_once('?')?.1;
+    query.split('&').find_map(|kv| {
+        let (k, v) = kv.split_once('=')?;
+        (k == key).then(|| v.to_owned())
+    })
+}
+
+impl App {
+    /// A request to the rip API, as Library Rip makes it (no Origin, no
+    /// cookies), with an optional API key.
+    async fn rip(
+        &self,
+        method: &str,
+        uri: &str,
+        body: Option<serde_json::Value>,
+        key: Option<&str>,
+    ) -> Resp {
+        let mut b = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::HOST, "library.example.org");
+        if let Some(k) = key {
+            b = b.header(header::AUTHORIZATION, format!("Bearer {k}"));
+        }
+        let body = match body {
+            Some(v) => {
+                b = b.header(header::CONTENT_TYPE, "application/json");
+                Body::from(v.to_string())
+            }
+            None => Body::empty(),
+        };
+        self.send(b.body(body).unwrap()).await
+    }
+
+    /// The librarian answers the connect page; returns the redirect.
+    async fn answer_connect(&self, redirect: &str, decision: &str) -> Resp {
+        let form = format!("{}&decision={decision}", connect_query(redirect, "st8"));
+        self.post("/connect", &form, true, false).await
+    }
+
+    /// The whole browser handshake up to the one-time code.
+    async fn connect_code(&self) -> String {
+        let r = self.answer_connect(REDIRECT, "yes").await;
+        assert_eq!(r.status, StatusCode::FOUND, "{}", r.body);
+        let to = r.headers[header::LOCATION].to_str().unwrap().to_owned();
+        assert!(to.starts_with(&format!("{REDIRECT}?code=")), "{to}");
+        assert_eq!(query_param(&to, "state").as_deref(), Some("st8"));
+        query_param(&to, "code").unwrap()
+    }
+
+    async fn exchange(&self, code: &str, verifier: &str, redirect: &str) -> Resp {
+        self.rip(
+            "POST",
+            "/api/rip/token",
+            Some(serde_json::json!({
+                "grantType": "authorization_code",
+                "code": code,
+                "codeVerifier": verifier,
+                "redirectUri": redirect,
+            })),
+            None,
+        )
+        .await
+    }
+
+    /// Connects a ripper and returns its API key.
+    async fn rip_key(&self) -> String {
+        let code = self.connect_code().await;
+        let r = self.exchange(&code, VERIFIER, REDIRECT).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        json(&r)["apiKey"].as_str().unwrap().to_owned()
+    }
+
+    async fn poll(&self, device_code: &str) -> Resp {
+        self.rip(
+            "POST",
+            "/api/rip/token",
+            Some(serde_json::json!({"grantType": "device_code", "deviceCode": device_code})),
+            None,
+        )
+        .await
+    }
+
+    /// Uploads one file through the rip API.
+    async fn rip_upload(
+        &self,
+        item: i64,
+        fields: &[(&str, &str)],
+        file_name: &str,
+        bytes: &[u8],
+        key: &str,
+    ) -> Resp {
+        let boundary = "RiPbOuNdArY";
+        let mut body: Vec<u8> = Vec::new();
+        for (k, v) in fields {
+            body.extend(
+                format!(
+                    "--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n"
+                )
+                .bytes(),
+            );
+        }
+        body.extend(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\nContent-Type: application/octet-stream\r\n\r\n")
+                .bytes(),
+        );
+        body.extend(bytes);
+        body.extend(format!("\r\n--{boundary}--\r\n").bytes());
+        let req = Request::post(format!("/api/rip/items/{item}/media"))
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .header(header::HOST, "library.example.org")
+            .header(header::AUTHORIZATION, format!("Bearer {key}"))
+            .body(Body::from(body))
+            .unwrap();
+        self.send(req).await
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    rip::hex(&Sha256::digest(bytes))
+}
+
+#[tokio::test]
+async fn rip_info_and_source_links() {
+    let a = app();
+    let r = a.rip("GET", "/api/rip/info", None, None).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let info = json(&r);
+    assert_eq!(info["name"], "Tallow Lane Library");
+    assert_eq!(info["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(info["minRipperVersion"], rip::MIN_RIPPER_VERSION);
+    assert_eq!(info["sourceUrl"], crate::config::DEFAULT_SOURCE_URL);
+
+    // The Player can read it too, without an account.
+    let r = a.api("GET", "/api/info", None, None).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(json(&r)["sourceUrl"], crate::config::DEFAULT_SOURCE_URL);
+
+    // Every page's footer offers the source code (the AGPL's network clause).
+    for (uri, admin) in [("/", false), ("/search?q=x", false), ("/admin", true)] {
+        let page = a.get(uri, admin).await;
+        assert!(
+            page.body.contains(&format!(
+                r#"href="{}" rel="noopener">Source code</a>"#,
+                crate::config::DEFAULT_SOURCE_URL
+            )),
+            "{uri}"
+        );
+    }
+    let custom = app_with(|c| c.source_url = "https://git.example.org/lib".into());
+    assert!(
+        custom
+            .get("/", false)
+            .await
+            .body
+            .contains("https://git.example.org/lib")
+    );
+}
+
+#[tokio::test]
+async fn connect_full_pkce_flow() {
+    let a = app();
+    let query = connect_query(REDIRECT, "st8");
+
+    // Not unlocked yet: the unlock form first, coming back to the same link.
+    let r = a.get(&format!("/connect?{query}"), false).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    let to = r.headers[header::LOCATION].to_str().unwrap();
+    assert!(
+        to.starts_with("/unlock?next=%2Fconnect%3Fclient%3Dlibrary-rip"),
+        "{to}"
+    );
+
+    let r = a.get(&format!("/connect?{query}"), true).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body.contains("Henry&#39;s desktop") || r.body.contains("Henry's desktop"));
+    assert!(r.body.contains("Yes, connect") && r.body.contains(">No<"));
+    assert!(r.body.contains("Librarian's desk"));
+    let csp = r.headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+    assert!(
+        csp.contains("form-action 'self' http://127.0.0.1:* http://localhost:*"),
+        "the answer may redirect to the ripper: {csp}"
+    );
+    assert!(
+        a.get("/", false).await.headers[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .contains("form-action 'self';"),
+        "only the connect page relaxes form-action"
+    );
+
+    let code = a.connect_code().await;
+    let r = a.exchange(&code, VERIFIER, REDIRECT).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.headers[header::CACHE_CONTROL], "no-store");
+    let t = json(&r);
+    let key = t["apiKey"].as_str().unwrap();
+    assert!(key.starts_with("lrk_") && key.len() == 47);
+    assert_eq!(t["keyName"], "Henry's desktop");
+    assert_eq!(t["library"]["name"], "Tallow Lane Library");
+    assert_eq!(t["library"]["url"], "http://library.example.org");
+
+    let r = a.rip("GET", "/api/rip/whoami", None, Some(key)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let me = json(&r);
+    assert_eq!(me["keyId"], t["keyId"]);
+    assert_eq!(me["keyName"], "Henry's desktop");
+
+    // Only the hash is stored, and using the key records when.
+    let (hash_len, used): (i64, Option<i64>) = a
+        .state
+        .db
+        .read_blocking(|c| {
+            Ok(c.query_row(
+                "SELECT length(key_hash), last_used_at FROM api_keys",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(hash_len, 32);
+    assert!(used.is_some());
+}
+
+#[tokio::test]
+async fn connect_refusals_and_bad_codes() {
+    let a = app();
+    // No sends the ripper an access_denied answer with its state.
+    let r = a.answer_connect(REDIRECT, "no").await;
+    assert_eq!(r.status, StatusCode::FOUND);
+    let to = r.headers[header::LOCATION].to_str().unwrap();
+    assert_eq!(to, format!("{REDIRECT}?error=access_denied&state=st8"));
+
+    // A wrong verifier fails, and burns the code.
+    let code = a.connect_code().await;
+    let r = a
+        .exchange(&code, &VERIFIER.replace('d', "e"), REDIRECT)
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&r)["error"], "invalid_grant");
+    assert!(
+        json(&r)["message"]
+            .as_str()
+            .unwrap()
+            .contains("didn't work")
+    );
+    let r = a.exchange(&code, VERIFIER, REDIRECT).await;
+    assert_eq!(
+        r.status,
+        StatusCode::BAD_REQUEST,
+        "single use, even after a failure"
+    );
+
+    // A code works once.
+    let code = a.connect_code().await;
+    assert_eq!(
+        a.exchange(&code, VERIFIER, REDIRECT).await.status,
+        StatusCode::OK
+    );
+    let r = a.exchange(&code, VERIFIER, REDIRECT).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&r)["error"], "invalid_grant");
+
+    // Bound to the redirect URI it was issued for.
+    let code = a.connect_code().await;
+    let r = a
+        .exchange(&code, VERIFIER, "http://127.0.0.1:9999/callback")
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+
+    // Codes expire (after five minutes).
+    let code = a.connect_code().await;
+    a.state.rip.expire_all();
+    let r = a.exchange(&code, VERIFIER, REDIRECT).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&r)["error"], "invalid_grant");
+
+    // Nonsense bodies.
+    let r = a
+        .rip(
+            "POST",
+            "/api/rip/token",
+            Some(serde_json::json!({"grantType": "password"})),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&r)["error"], "invalid_request");
+}
+
+#[tokio::test]
+async fn connect_refuses_other_redirects() {
+    let a = app();
+    for bad in [
+        "https://evil.example/callback",
+        "http://127.0.0.1/callback",
+        "http://example.org:5000/callback",
+        "http://127.0.0.1:5000@evil.example/callback",
+        "http://localhost.evil.example:5000/callback",
+    ] {
+        let r = a
+            .get(&format!("/connect?{}", connect_query(bad, "s")), true)
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}");
+        assert!(r.body.contains("somewhere other than Library Rip"), "{bad}");
+        assert!(r.headers.get(header::LOCATION).is_none());
+        let r = a.answer_connect(bad, "yes").await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}");
+        assert!(r.headers.get(header::LOCATION).is_none(), "{bad}");
+    }
+    // Missing PKCE, a plain challenge or another client are refused too.
+    let r = a
+        .get(
+            &format!(
+                "/connect?client=library-rip&redirect_uri={}&state=s&code_challenge={CHALLENGE}&code_challenge_method=plain",
+                crate::views::urlencode(REDIRECT)
+            ),
+            true,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let r = a
+        .get(
+            &format!(
+                "/connect?{}",
+                connect_query(REDIRECT, "s").replace("library-rip", "other")
+            ),
+            true,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    // localhost works as well as 127.0.0.1.
+    let r = a.answer_connect("http://localhost:4000/cb", "yes").await;
+    assert_eq!(r.status, StatusCode::FOUND);
+}
+
+#[tokio::test]
+async fn device_code_flow_in_every_state() {
+    let a = app();
+    let start = |name: &'static str| {
+        let a = &a;
+        async move {
+            let r = a
+                .rip(
+                    "POST",
+                    "/api/rip/device",
+                    Some(serde_json::json!({"name": name})),
+                    None,
+                )
+                .await;
+            assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+            json(&r)
+        }
+    };
+    let d = start("Henry's laptop").await;
+    let user_code = d["userCode"].as_str().unwrap().to_owned();
+    assert!(rip::normalise_user_code(&user_code).as_deref() == Some(user_code.as_str()));
+    assert_eq!(user_code.len(), 9);
+    assert_eq!(
+        d["verificationUri"],
+        "http://library.example.org/connect/device"
+    );
+    assert_eq!(d["interval"], 5);
+    assert_eq!(d["expiresIn"], 600);
+    let device_code = d["deviceCode"].as_str().unwrap().to_owned();
+
+    // Waiting for the librarian, and polling too fast.
+    let r = a.poll(&device_code).await;
+    assert_eq!(r.status, StatusCode::PRECONDITION_REQUIRED);
+    assert_eq!(json(&r)["error"], "authorization_pending");
+    let r = a.poll(&device_code).await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(json(&r)["error"], "slow_down");
+
+    // The librarian unlocks, types the code (any case, no dash) and says yes.
+    let r = a.get("/connect/device", false).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER, "librarian only");
+    let page = a.get("/connect/device", true).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.body.contains("WXYZ-1234"));
+    let r = a
+        .post("/connect/device", "code=ZZZZ-0000", true, false)
+        .await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(r.body.contains("That code isn"));
+    let typed = user_code.to_lowercase().replace('-', " ");
+    let r = a
+        .post(
+            "/connect/device",
+            &format!("code={}", crate::views::urlencode(&typed)),
+            true,
+            false,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body.contains("laptop") && r.body.contains("Yes, connect"));
+    let r = a
+        .post(
+            "/connect/device",
+            &format!("code={user_code}&decision=yes"),
+            true,
+            false,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body.contains("Connected"));
+    let r = a.poll(&device_code).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let key = json(&r)["apiKey"].as_str().unwrap().to_owned();
+    assert_eq!(json(&r)["keyName"], "Henry's laptop");
+    assert_eq!(
+        a.rip("GET", "/api/rip/whoami", None, Some(&key))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let r = a.poll(&device_code).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "used up");
+
+    // Refused.
+    let d = start("Stranger").await;
+    let r = a
+        .post(
+            "/connect/device",
+            &format!("code={}&decision=no", d["userCode"].as_str().unwrap()),
+            true,
+            false,
+        )
+        .await;
+    assert!(r.body.contains("Not connected"));
+    let r = a.poll(d["deviceCode"].as_str().unwrap()).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert_eq!(json(&r)["error"], "access_denied");
+
+    // Expired.
+    let d = start("Slow").await;
+    a.state.rip.expire_all();
+    let r = a.poll(d["deviceCode"].as_str().unwrap()).await;
+    assert_eq!(r.status, StatusCode::GONE);
+    assert_eq!(json(&r)["error"], "expired_token");
+    let r = a
+        .post(
+            "/connect/device",
+            &format!("code={}", d["userCode"].as_str().unwrap()),
+            true,
+            false,
+        )
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "expired codes can't be approved"
+    );
+
+    // Never issued.
+    let r = a.poll("made-up").await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&r)["error"], "invalid_grant");
+}
+
+impl App {
+    /// A rip API request arriving over a connection from `peer`, optionally
+    /// with an `X-Forwarded-For` header.
+    async fn rip_from(
+        &self,
+        peer: &str,
+        forwarded_for: Option<&str>,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> Resp {
+        let mut b = Request::post(uri)
+            .header(header::HOST, "library.example.org")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(f) = forwarded_for {
+            b = b.header("x-forwarded-for", f);
+        }
+        let mut req = b.body(Body::from(body.to_string())).unwrap();
+        let peer: std::net::SocketAddr = peer.parse().unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(peer));
+        self.send(req).await
+    }
+
+    async fn new_device_from(&self, peer: &str) -> Resp {
+        self.rip_from(
+            peer,
+            None,
+            "/api/rip/device",
+            serde_json::json!({"name": "x"}),
+        )
+        .await
+    }
+
+    async fn exchange_from(&self, peer: &str, code: &str) -> Resp {
+        self.rip_from(
+            peer,
+            None,
+            "/api/rip/token",
+            serde_json::json!({
+                "grantType": "authorization_code",
+                "code": code,
+                "codeVerifier": VERIFIER,
+                "redirectUri": REDIRECT,
+            }),
+        )
+        .await
+    }
+
+    async fn poll_from(&self, peer: &str, device_code: &str) -> Resp {
+        self.rip_from(
+            peer,
+            None,
+            "/api/rip/token",
+            serde_json::json!({"grantType": "device_code", "deviceCode": device_code}),
+        )
+        .await
+    }
+
+    /// Thirty codes that don't work, from `peer`: its next bad one is 429.
+    async fn use_up_failures(&self, peer: &str) {
+        for i in 0..30 {
+            // Made-up codes of both kinds count.
+            let r = if i % 2 == 0 {
+                self.exchange_from(peer, "guess").await
+            } else {
+                self.poll_from(peer, "made-up").await
+            };
+            assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.body);
+            assert_eq!(json(&r)["error"], "invalid_grant");
+        }
+        let r = self.exchange_from(peer, "guess").await;
+        assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(json(&r)["error"], "too_many_requests");
+    }
+}
+
+#[tokio::test]
+async fn device_codes_are_limited_per_address() {
+    let a = app();
+    for _ in 0..20 {
+        assert_eq!(
+            a.new_device_from("10.0.0.1:4000").await.status,
+            StatusCode::OK
+        );
+    }
+    let r = a.new_device_from("10.0.0.1:4001").await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(json(&r)["error"], "too_many_requests");
+    // Someone else can still start connecting.
+    assert_eq!(
+        a.new_device_from("10.0.0.2:4000").await.status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn bad_codes_slow_down_only_their_sender() {
+    let a = app();
+    a.use_up_failures("10.0.0.1:4000").await;
+    // Another address's mistakes are still just mistakes…
+    let r = a.exchange_from("10.0.0.2:4000", "guess").await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    // …and its good code works.
+    let code = a.connect_code().await;
+    let r = a.exchange_from("10.0.0.2:4000", &code).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+}
+
+#[tokio::test]
+async fn a_good_code_works_even_from_a_slowed_down_address() {
+    let a = app();
+    a.use_up_failures("10.0.0.1:4000").await;
+    let code = a.connect_code().await;
+    let r = a.exchange_from("10.0.0.1:4000", &code).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert!(json(&r)["apiKey"].as_str().unwrap().starts_with("lrk_"));
+
+    // An approved device code too, polled from the same address.
+    let d = json(&a.new_device_from("10.0.0.1:4000").await);
+    let device_code = d["deviceCode"].as_str().unwrap();
+    let r = a
+        .post(
+            "/connect/device",
+            &format!("code={}&decision=yes", d["userCode"].as_str().unwrap()),
+            true,
+            false,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let r = a.poll_from("10.0.0.1:4000", device_code).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+}
+
+#[tokio::test]
+async fn waiting_on_a_known_device_code_never_counts_as_a_failure() {
+    let a = app();
+    let d = json(&a.new_device_from("10.0.0.1:4000").await);
+    let device_code = d["deviceCode"].as_str().unwrap();
+    // Far more polls than the failure limit, pending and too fast.
+    for _ in 0..40 {
+        let r = a.poll_from("10.0.0.1:4000", device_code).await;
+        assert!(
+            [
+                StatusCode::PRECONDITION_REQUIRED,
+                StatusCode::TOO_MANY_REQUESTS
+            ]
+            .contains(&r.status),
+            "{}",
+            r.body
+        );
+        assert_ne!(json(&r)["error"], "too_many_requests");
+    }
+    // Not one of them was a failure: a bad code is still only a mistake.
+    let r = a.exchange_from("10.0.0.1:4000", "guess").await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&r)["error"], "invalid_grant");
+}
+
+#[tokio::test]
+async fn forwarded_addresses_are_believed_only_from_the_proxy() {
+    let a = app();
+    // Behind the proxy on this computer, clients are told apart by the
+    // address the proxy added (the last one).
+    for _ in 0..20 {
+        let r = a
+            .rip_from(
+                "127.0.0.1:5000",
+                Some("6.6.6.6, 203.0.113.7"),
+                "/api/rip/device",
+                serde_json::json!({"name": "x"}),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK);
+    }
+    let blocked = a
+        .rip_from(
+            "127.0.0.1:5001",
+            Some("203.0.113.7"),
+            "/api/rip/device",
+            serde_json::json!({"name": "x"}),
+        )
+        .await;
+    assert_eq!(blocked.status, StatusCode::TOO_MANY_REQUESTS);
+    let other = a
+        .rip_from(
+            "127.0.0.1:5000",
+            Some("203.0.113.7, 198.51.100.1"),
+            "/api/rip/device",
+            serde_json::json!({"name": "x"}),
+        )
+        .await;
+    assert_eq!(other.status, StatusCode::OK, "a different client");
+
+    // A client connecting directly can't dodge its limit by making up
+    // X-Forwarded-For.
+    for i in 0..20 {
+        let r = a
+            .rip_from(
+                "10.9.9.9:4000",
+                Some(&format!("192.0.2.{i}")),
+                "/api/rip/device",
+                serde_json::json!({"name": "x"}),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK);
+    }
+    let r = a
+        .rip_from(
+            "10.9.9.9:4000",
+            Some("192.0.2.200"),
+            "/api/rip/device",
+            serde_json::json!({"name": "x"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[test]
+fn client_addresses_come_from_the_connection_or_the_local_proxy() {
+    let headers = |xff: &str| {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("x-forwarded-for", xff.parse().unwrap());
+        h
+    };
+    let ip = |s: &str| Some(s.parse::<std::net::IpAddr>().unwrap());
+    let remote = Some("198.51.100.4:1234".parse().unwrap());
+    let local = Some("127.0.0.1:1234".parse().unwrap());
+    let local6 = Some("[::1]:1234".parse().unwrap());
+    assert_eq!(ClientIp::from_parts(None, &headers("1.2.3.4")).0, None);
+    assert_eq!(
+        ClientIp::from_parts(None, &headers("1.2.3.4")).key(),
+        "unknown"
+    );
+    assert_eq!(
+        ClientIp::from_parts(remote, &headers("1.2.3.4")).0,
+        ip("198.51.100.4")
+    );
+    assert_eq!(
+        ClientIp::from_parts(local, &headers("9.9.9.9, 1.2.3.4")).0,
+        ip("1.2.3.4")
+    );
+    assert_eq!(
+        ClientIp::from_parts(local6, &headers("[2001:db8::1]:443")).0,
+        ip("2001:db8::1")
+    );
+    assert_eq!(
+        ClientIp::from_parts(local, &headers("1.2.3.4:80")).0,
+        ip("1.2.3.4")
+    );
+    // Garbage or no header: the proxy's own address.
+    assert_eq!(
+        ClientIp::from_parts(local, &headers("not an address")).0,
+        ip("127.0.0.1")
+    );
+    assert_eq!(
+        ClientIp::from_parts(local, &axum::http::HeaderMap::new()).0,
+        ip("127.0.0.1")
+    );
+}
+
+#[tokio::test]
+async fn revoked_keys_get_401() {
+    let a = app();
+    let key = a.rip_key().await;
+    // Missing or made-up keys.
+    let r = a.rip("GET", "/api/rip/whoami", None, None).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(r.headers[header::WWW_AUTHENTICATE], "Bearer");
+    assert!(
+        json(&r)["error"]
+            .as_str()
+            .unwrap()
+            .contains("isn't connected")
+    );
+    let r = a
+        .rip(
+            "GET",
+            "/api/rip/whoami",
+            None,
+            Some("lrk_madeupmadeupmadeupmadeupmadeup"),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+
+    // The ripper disconnecting itself.
+    let r = a.rip("DELETE", "/api/rip/token", None, Some(&key)).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let r = a.rip("GET", "/api/rip/whoami", None, Some(&key)).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+
+    // The librarian disconnecting one from the desk.
+    let key = a.rip_key().await;
+    let desk = a.get("/admin", true).await;
+    assert!(desk.body.contains("Connected rippers"));
+    assert!(desk.body.contains("Henry"));
+    assert!(desk.body.contains("Disconnect"));
+    let id = json(&a.rip("GET", "/api/rip/whoami", None, Some(&key)).await)["keyId"]
+        .as_i64()
+        .unwrap();
+    let r = a
+        .post(&format!("/admin/rippers/{id}/disconnect"), "", false, false)
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "librarian only");
+    let r = a
+        .post(&format!("/admin/rippers/{id}/disconnect"), "", true, false)
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    let r = a.rip("GET", "/api/rip/whoami", None, Some(&key)).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    let desk = a.get("/admin?msg=disconnected", true).await;
+    assert!(desk.body.contains("No computers are connected"));
+    assert!(desk.body.contains("Disconnected."));
+    let r = a
+        .post(&format!("/admin/rippers/{id}/disconnect"), "", true, false)
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "already disconnected");
+}
+
+#[tokio::test]
+async fn api_keys_open_only_the_rip_api() {
+    let a = app();
+    let key = a.rip_key().await;
+    let item = a.add("Blue", "Joni Mitchell").await;
+    // Player endpoints want an account, not a key.
+    for uri in [
+        "/api/items",
+        "/api/account/me",
+        "/api/favourites",
+        "/api/playlists",
+    ] {
+        let r = a.rip("GET", uri, None, Some(&key)).await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{uri}");
+    }
+    // The desk and the studio want the librarian.
+    let r = a.rip("GET", "/admin", None, Some(&key)).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    let r = a
+        .rip_upload(item, &[("kind", "audio")], "a.flac", b"x", &key)
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "missing sha256, but the key works here"
+    );
+    let req = Request::post(format!("/admin/items/{item}/media/upload"))
+        .header(header::AUTHORIZATION, format!("Bearer {key}"))
+        .header(header::CONTENT_TYPE, "multipart/form-data; boundary=x")
+        .body(Body::from("--x--\r\n"))
+        .unwrap();
+    assert_eq!(a.send(req).await.status, StatusCode::FORBIDDEN);
+    let r = a
+        .rip("POST", "/admin/rippers/1/disconnect", None, Some(&key))
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    // And the librarian's cookie doesn't open the rip API.
+    let r = a
+        .api("GET", "/api/rip/whoami", None, Some(&a.admin_cookie))
+        .await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn rip_api_types_items_and_covers() {
+    let a = app();
+    let key = a.rip_key().await;
+    let r = a.rip("GET", "/api/rip/types", None, Some(&key)).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let types = json(&r);
+    let music = types
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["slug"] == "music")
+        .unwrap();
+    assert_eq!(music["lookup"], "music");
+
+    let r = a
+        .rip(
+            "POST",
+            "/api/rip/items",
+            Some(serde_json::json!({
+                "typeSlug": "music",
+                "title": "Night Songs",
+                "creator": "The Lanterns",
+                "year": 1998,
+                "identifier": "5012345678900",
+                "description": "Ripped with Library Rip.",
+                "tags": ["folk", "cd"],
+                "musicbrainzReleaseId": "B84EE12A-09EF-421B-82DE-0441A926375B",
+            })),
+            Some(&key),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    let created = json(&r);
+    let id = created["id"].as_i64().unwrap();
+    assert_eq!(
+        created["url"],
+        format!("http://library.example.org/items/{id}")
+    );
+    let it = a
+        .state
+        .db
+        .read_blocking(move |c| Ok(crate::db::items::get(c, id)?.unwrap()))
+        .unwrap();
+    assert_eq!((it.type_slug.as_str(), it.year), ("music", Some(1998)));
+    assert_eq!(it.tags, "folk, cd");
+    assert!(
+        it.notes
+            .contains("https://musicbrainz.org/release/b84ee12a-09ef-421b-82de-0441a926375b")
+    );
+
+    // Problems are 422 with the field named.
+    for (body, field) in [
+        (
+            serde_json::json!({"typeSlug": "music", "title": " "}),
+            "title",
+        ),
+        (
+            serde_json::json!({"typeSlug": "vinyl", "title": "X"}),
+            "typeSlug",
+        ),
+        (
+            serde_json::json!({"title": "X", "musicbrainzReleaseId": "nope"}),
+            "musicbrainzReleaseId",
+        ),
+        (serde_json::json!({"title": "X", "year": "soon"}), "year"),
+    ] {
+        let r = a
+            .rip("POST", "/api/rip/items", Some(body), Some(&key))
+            .await;
+        assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
+        assert!(json(&r)["fields"][field].is_string(), "{field}: {}", r.body);
+    }
+
+    // Finding an entry to attach to: words in any order, or the barcode.
+    a.add("Night Train", "Someone Else").await;
+    let r = a
+        .rip(
+            "GET",
+            "/api/rip/items?q=lanterns+night&type=music",
+            None,
+            Some(&key),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let found = json(&r);
+    assert_eq!(ids(&found), vec![id]);
+    assert_eq!(found[0]["fileCount"], 0);
+    assert_eq!(found[0]["identifier"], "5012345678900");
+    assert_eq!(
+        found[0]["url"],
+        format!("http://library.example.org/items/{id}")
+    );
+    let r = a
+        .rip("GET", "/api/rip/items?q=5012345678900", None, Some(&key))
+        .await;
+    assert_eq!(ids(&json(&r)), vec![id]);
+    let r = a
+        .rip("GET", "/api/rip/items?q=night&type=book", None, Some(&key))
+        .await;
+    assert_eq!(json(&r).as_array().unwrap().len(), 1, "type filter");
+
+    // The front cover.
+    let boundary = "CoVeR";
+    let mut body: Vec<u8> = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"cover.png\"\r\nContent-Type: image/png\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend(png());
+    body.extend(format!("\r\n--{boundary}--\r\n").bytes());
+    let photo = |item: i64, body: Vec<u8>| {
+        Request::post(format!("/api/rip/items/{item}/photos"))
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .header(header::AUTHORIZATION, format!("Bearer {key}"))
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let r = a.send(photo(id, body.clone())).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    let n = a
+        .state
+        .db
+        .read_blocking(move |c| Ok(crate::db::photos::for_item(c, id)?.len()))
+        .unwrap();
+    assert_eq!(n, 1);
+    assert_eq!(
+        a.send(photo(id + 100, body)).await.status,
+        StatusCode::NOT_FOUND
+    );
+    let not_png = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"c.png\"\r\n\r\nnot a picture\r\n--{boundary}--\r\n"
+    );
+    let r = a.send(photo(id, not_png.into_bytes())).await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn rip_media_upload_checks_sha256() {
+    let a = app();
+    let key = a.rip_key().await;
+    let item = a.add("Night Songs", "The Lanterns").await;
+    let flac = b"fLaC pretend audio".to_vec();
+    let good = sha256_hex(&flac);
+
+    let r = a
+        .rip_upload(
+            item,
+            &[
+                ("kind", "audio"),
+                ("title", "Lantern Light"),
+                ("disc", "1"),
+                ("track", "1"),
+                ("duration_ms", "1000"),
+                ("sha256", &good.to_uppercase()),
+            ],
+            "01 Lantern Light.flac",
+            &flac,
+            &key,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    let audio = json(&r)["id"].as_i64().unwrap();
+
+    // A damaged file is refused and nothing is kept.
+    let before = a.media_dir_files().len();
+    let r = a
+        .rip_upload(
+            item,
+            &[("kind", "audio"), ("sha256", &"0".repeat(64))],
+            "02.flac",
+            &flac,
+            &key,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        json(&r)["fields"]["sha256"]
+            .as_str()
+            .unwrap()
+            .contains("damaged")
+    );
+    assert_eq!(
+        a.media_dir_files().len(),
+        before,
+        "the damaged copy is removed"
+    );
+    // No checksum, or a malformed one, is refused before the file is stored.
+    let r = a
+        .rip_upload(item, &[("kind", "audio")], "02.flac", &flac, &key)
+        .await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let r = a
+        .rip_upload(
+            item,
+            &[("kind", "audio"), ("sha256", "abc")],
+            "02.flac",
+            &flac,
+            &key,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY);
+    // Unknown items and kinds.
+    let r = a
+        .rip_upload(
+            item + 50,
+            &[("kind", "audio"), ("sha256", &good)],
+            "a.flac",
+            &flac,
+            &key,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    let r = a
+        .rip_upload(
+            item,
+            &[("kind", "hologram"), ("sha256", &good)],
+            "a.flac",
+            &flac,
+            &key,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // The log is kept as an archive file.
+    let log = b"Library Rip log\nAccurately ripped (confidence 5)\n".to_vec();
+    let r = a
+        .rip_upload(
+            item,
+            &[
+                ("kind", "archive"),
+                ("title", "Rip log"),
+                ("sha256", &sha256_hex(&log)),
+            ],
+            "rip.log",
+            &log,
+            &key,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    let archived = json(&r)["id"].as_i64().unwrap();
+
+    // Listing what's there lets an interrupted upload skip what arrived.
+    let r = a
+        .rip(
+            "GET",
+            &format!("/api/rip/items/{item}/media"),
+            None,
+            Some(&key),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let list = json(&r);
+    assert_eq!(ids(&list), vec![audio, archived]);
+    assert_eq!(list[0]["sha256"], good);
+    assert_eq!(list[0]["kind"], "audio");
+    assert_eq!(list[0]["track"], 1);
+    assert_eq!(list[1]["kind"], "archive");
+    let r = a
+        .rip(
+            "GET",
+            &format!("/api/rip/items/{}/media", item + 50),
+            None,
+            Some(&key),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+
+    // The studio stores a SHA-256 for every upload too, and checks one if sent.
+    let r = a
+        .upload(
+            item,
+            &[("kind", "audio")],
+            "03.flac",
+            "audio/flac",
+            b"studio bytes",
+            true,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    let sid = json(&r)["id"].as_i64().unwrap();
+    let stored = a
+        .state
+        .db
+        .read_blocking(move |c| Ok(crate::db::media_files::get(c, sid)?.unwrap().sha256))
+        .unwrap();
+    assert_eq!(stored, Some(sha256_hex(b"studio bytes")));
+    let r = a
+        .upload(
+            item,
+            &[("kind", "audio"), ("sha256", &good)],
+            "04.flac",
+            "audio/flac",
+            b"other",
+            true,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn archive_files_are_hidden_from_the_player() {
+    let a = app();
+    let cookie = a.register_adult("alice").await;
+    let item = a.add("Night Songs", "The Lanterns").await;
+    let track = a.media(item, "Lantern Light", "audio", b"audio");
+    let log = a.media(item, "Rip log", "archive", b"the rip log");
+    let only_archive = a.add("Log only", "").await;
+    a.media(only_archive, "Lonely log", "archive", b"x");
+
+    let r = a.api("GET", "/api/items", None, Some(&cookie)).await;
+    let list = json(&r);
+    assert_eq!(
+        ids(&list["items"]),
+        vec![item],
+        "an item with only archive files isn't listed"
+    );
+    assert_eq!(list["items"][0]["fileCount"], 1);
+    assert_eq!(list["items"][0]["kinds"], serde_json::json!(["audio"]));
+    assert_eq!(list["total"], 1);
+
+    let r = a
+        .api("GET", &format!("/api/items/{item}"), None, Some(&cookie))
+        .await;
+    assert_eq!(ids(&json(&r)["media"]), vec![track]);
+    for uri in [
+        format!("/api/media/{log}"),
+        format!("/api/media/{log}/stream"),
+    ] {
+        let r = a.api("GET", &uri, None, Some(&cookie)).await;
+        assert_eq!(r.status, StatusCode::NOT_FOUND, "{uri}");
+    }
+    let r = a
+        .api(
+            "GET",
+            &format!("/api/items/{only_archive}"),
+            None,
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    let r = a
+        .api(
+            "POST",
+            "/api/media/check",
+            Some(serde_json::json!({"ids": [track, log]})),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(json(&r)["allowed"], serde_json::json!([track]));
+    let r = a
+        .api(
+            "PUT",
+            &format!("/api/favourites/{log}"),
+            None,
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    let r = a
+        .api(
+            "POST",
+            "/api/playlists",
+            Some(serde_json::json!({"name": "Mine"})),
+            Some(&cookie),
+        )
+        .await;
+    let pid = json(&r)["id"].as_i64().unwrap();
+    let r = a
+        .api(
+            "POST",
+            &format!("/api/playlists/{pid}/entries"),
+            Some(serde_json::json!({"mediaIds": [log]})),
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    let r = a
+        .api("GET", "/api/items?kind=archive", None, Some(&cookie))
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+
+    // The librarian sees them under "Archive files" and can download them.
+    let page = a.get(&format!("/items/{item}"), true).await;
+    assert!(page.body.contains("Archive files"));
+    let link = format!("/admin/items/{item}/media/{log}/download");
+    assert!(page.body.contains(&link));
+    assert!(
+        !a.get(&format!("/items/{item}"), false)
+            .await
+            .body
+            .contains("Archive files")
+    );
+    let r = a.get(&link, true).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.body, "the rip log");
+    assert!(
+        r.headers[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap()
+            .starts_with("attachment;")
+    );
+    assert_eq!(a.get(&link, false).await.status, StatusCode::SEE_OTHER);
+    let r = a
+        .get(
+            &format!("/admin/items/{only_archive}/media/{log}/download"),
+            true,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "must belong to the item");
+    let studio = a.get(&format!("/admin/items/{item}/media"), true).await;
+    assert!(studio.body.contains(&link));
+}
+
+#[tokio::test]
+async fn ripper_download_page() {
+    let a = app();
+    let page = a.get("/ripper", false).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.body.contains("Get Library Rip"));
+    assert!(page.body.contains("No builds have been put here yet"));
+    assert!(page.body.contains("com.makemkv.MakeMKV"));
+    assert!(page.body.contains("restricted by law"));
+    assert!(page.body.contains(crate::config::DEFAULT_SOURCE_URL));
+
+    let dir = a.state.cfg.ripper_downloads_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("library-rip-0.1.0-x86_64.AppImage"), b"abc").unwrap();
+    std::fs::write(dir.join("library-rip-0.1.0-windows-x64.zip"), b"windows").unwrap();
+    std::fs::write(dir.join("library-rip-0.1.0-universal.dmg"), b"mac").unwrap();
+    std::fs::write(dir.join("library-rip-0.1.0-x86_64.AppImage.sha256"), b"x").unwrap();
+    let req = Request::get("/ripper")
+        .header(
+            header::USER_AGENT,
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        )
+        .body(Body::empty())
+        .unwrap();
+    let page = a.send(req).await;
+    assert!(page.body.contains("For Windows"));
+    assert!(page.body.contains("Other systems"));
+    let windows = page.body.find("library-rip-0.1.0-windows-x64.zip").unwrap();
+    let linux = page.body.find("library-rip-0.1.0-x86_64.AppImage").unwrap();
+    assert!(windows < linux, "the visitor's system comes first");
+    assert!(page.body.contains(&sha256_hex(b"abc")));
+    assert!(page.body.contains("3 bytes"));
+    assert!(
+        !page.body.contains(".sha256<"),
+        "checksum files aren't builds"
+    );
+
+    let r = a
+        .get("/ripper/download/library-rip-0.1.0-x86_64.AppImage", false)
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.body, "abc");
+    assert!(
+        r.headers[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap()
+            .starts_with("attachment;")
+    );
+    for bad in [
+        "..%2Fsession.key",
+        "missing.zip",
+        ".hidden",
+        "library-rip-0.1.0-x86_64.AppImage.sha256",
+    ] {
+        let r = a.get(&format!("/ripper/download/{bad}"), false).await;
+        assert_eq!(r.status, StatusCode::NOT_FOUND, "{bad}");
+    }
+
+    // Linked from the desk and the studio.
+    assert!(
+        a.get("/admin", true)
+            .await
+            .body
+            .contains(r#"href="/ripper""#)
+    );
+    let item = a.add("Night Songs", "").await;
+    assert!(
+        a.get(&format!("/admin/items/{item}/media"), true)
+            .await
+            .body
+            .contains(r#"href="/ripper""#)
+    );
+}
+
+#[tokio::test]
+async fn site_password_leaves_the_rip_api_to_its_keys() {
+    let a = app_with(|c| c.site_password = Some("family".into()));
+    assert_eq!(a.get("/", false).await.status, StatusCode::UNAUTHORIZED);
+    let r = a.rip("GET", "/api/rip/info", None, None).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let r = a.rip("GET", "/api/rip/whoami", None, None).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(r.headers[header::WWW_AUTHENTICATE], "Bearer");
+}
+
+/// The dependency licences fit the AGPL (`deny.toml`). Skipped when
+/// cargo-deny isn't installed.
+#[test]
+fn cargo_deny_licences_pass() {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let installed = std::process::Command::new(&cargo)
+        .args(["deny", "--version"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !installed {
+        eprintln!("cargo-deny isn't installed; skipping the licence check");
+        return;
+    }
+    let out = std::process::Command::new(&cargo)
+        .args(["deny", "--offline", "check", "licenses"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "cargo deny check licenses failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[tokio::test]
+async fn upload_text_fields_are_capped() {
+    let a = app();
+    let key = a.rip_key().await;
+    let item = a.add("Night Songs", "The Lanterns").await;
+    let long = "x".repeat(5000);
+    let flac = b"fLaC pretend audio".to_vec();
+    let good = sha256_hex(&flac);
+
+    // The studio: a title far over 4 KB is refused, nothing is kept.
+    let before = a.media_dir_files();
+    let r = a
+        .upload(
+            item,
+            &[("title", &long)],
+            "song.mp3",
+            "audio/mpeg",
+            b"ID3 audio",
+            true,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", r.body);
+    assert!(json(&r)["error"].as_str().unwrap().contains("title"));
+    assert_eq!(a.media_dir_files(), before);
+    // Just under the cap is fine (and kept to 1000 characters).
+    let r = a
+        .upload(
+            item,
+            &[("title", &"y".repeat(4000))],
+            "song.mp3",
+            "audio/mpeg",
+            b"ID3 audio",
+            true,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+
+    // The rip API, the same.
+    let before = a.media_dir_files();
+    let r = a
+        .rip_upload(
+            item,
+            &[("kind", "audio"), ("sha256", &good), ("title", &long)],
+            "01.flac",
+            &flac,
+            &key,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", r.body);
+    assert_eq!(a.media_dir_files(), before);
+
+    // Endless small fields are refused too.
+    let many: Vec<(String, String)> = (0..40).map(|i| (format!("f{i}"), "v".into())).collect();
+    let many: Vec<(&str, &str)> = many.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let r = a.rip_upload(item, &many, "01.flac", &flac, &key).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.body);
+    assert_eq!(a.media_dir_files(), before);
+}
+
+#[tokio::test]
+async fn a_dropped_upload_leaves_no_partial_file() {
+    use tokio::io::AsyncWriteExt;
+    let a = app();
+    let item = a.add("Night Songs", "The Lanterns").await;
+    let boundary = "DrOpPeDbOuNdArY";
+    // The body arrives through a pipe the test writes to, so the request
+    // can be dropped half way through the file.
+    let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+    let body = Body::from_stream(tokio_util::io::ReaderStream::new(reader));
+    let req = Request::post(format!("/admin/items/{item}/media/upload"))
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .header(header::HOST, "localhost")
+        .header(header::ORIGIN, "http://localhost")
+        .header(header::ACCEPT, "application/json")
+        .header(header::COOKIE, &a.admin_cookie)
+        .body(body)
+        .unwrap();
+    let request = tokio::spawn(a.router.clone().oneshot(req));
+    writer
+        .write_all(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"song.mp3\"\r\nContent-Type: audio/mpeg\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+    writer.write_all(&[7u8; 32 * 1024]).await.unwrap();
+    writer.flush().await.unwrap();
+    // Wait for the partial file to appear…
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !a.media_dir_files().iter().any(|f| f.ends_with(".part")) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no partial file appeared"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    // …then drop the request mid-write, as when the server shuts down.
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
+    drop(writer);
+    assert!(
+        a.media_dir_files().is_empty(),
+        "left behind: {:?}",
+        a.media_dir_files()
+    );
 }

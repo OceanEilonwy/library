@@ -2,7 +2,9 @@
 //! subtitles attached to videos.
 //!
 //! Every read that serves the Player takes `adult`: a child account never
-//! receives a file of a restricted item.
+//! receives a file of a restricted item. Files of the `archive` kind (rip
+//! logs, cue sheets, masters) are for the librarian only: no Player read
+//! returns them.
 
 use std::collections::HashMap;
 
@@ -19,16 +21,24 @@ pub enum MediaKind {
     Audio,
     Video,
     Document,
+    /// Kept for the record, never shown or streamed in the Player.
+    Archive,
 }
 
 impl MediaKind {
-    pub const ALL: [MediaKind; 3] = [MediaKind::Audio, MediaKind::Video, MediaKind::Document];
+    pub const ALL: [MediaKind; 4] = [
+        MediaKind::Audio,
+        MediaKind::Video,
+        MediaKind::Document,
+        MediaKind::Archive,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             MediaKind::Audio => "audio",
             MediaKind::Video => "video",
             MediaKind::Document => "document",
+            MediaKind::Archive => "archive",
         }
     }
 
@@ -37,6 +47,7 @@ impl MediaKind {
             "audio" => Some(MediaKind::Audio),
             "video" => Some(MediaKind::Video),
             "document" => Some(MediaKind::Document),
+            "archive" => Some(MediaKind::Archive),
             _ => None,
         }
     }
@@ -46,9 +57,21 @@ impl MediaKind {
             MediaKind::Audio => "Audio",
             MediaKind::Video => "Video",
             MediaKind::Document => "Document",
+            MediaKind::Archive => "Archive",
+        }
+    }
+
+    /// Does the Player ever see files of this kind?
+    pub fn playable(self) -> bool {
+        match self {
+            MediaKind::Audio | MediaKind::Video | MediaKind::Document => true,
+            MediaKind::Archive => false,
         }
     }
 }
+
+/// SQL condition (on `m`) for files the Player may see at all.
+const PLAYABLE: &str = "m.kind <> 'archive'";
 
 /// A media file with the item details the Player shows alongside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,12 +95,15 @@ pub struct MediaFile {
     pub restricted: bool,
     /// File name of the item's first photo.
     pub cover: Option<String>,
+    /// Lower-case hex SHA-256 of the stored bytes (older uploads may lack it).
+    pub sha256: Option<String>,
 }
 
 const SELECT: &str = "SELECT m.id, m.item_id, m.kind, m.title, m.disc, m.track, m.file,
         m.original_name, m.mime, m.size_bytes, m.duration_ms, m.position, m.created_at,
         i.title, i.creator, i.year, i.restricted,
-        (SELECT p.file FROM photos p WHERE p.item_id = i.id ORDER BY p.position, p.id LIMIT 1)
+        (SELECT p.file FROM photos p WHERE p.item_id = i.id ORDER BY p.position, p.id LIMIT 1),
+        m.sha256
     FROM media_files m JOIN items i ON i.id = m.item_id";
 
 /// The order files of an item play in.
@@ -88,7 +114,8 @@ impl MediaFile {
         Ok(Self {
             id: r.get(0)?,
             item_id: r.get(1)?,
-            kind: MediaKind::parse(&r.get::<_, String>(2)?).unwrap_or(MediaKind::Document),
+            // Anything unknown is treated as an archive file: never played.
+            kind: MediaKind::parse(&r.get::<_, String>(2)?).unwrap_or(MediaKind::Archive),
             title: r.get(3)?,
             disc: r.get(4)?,
             track: r.get(5)?,
@@ -104,12 +131,14 @@ impl MediaFile {
             year: r.get(15)?,
             restricted: r.get(16)?,
             cover: r.get(17)?,
+            sha256: r.get(18)?,
         })
     }
 
-    /// May a viewer with this much access play it?
+    /// May a Player viewer with this much access play it? Never for
+    /// archive files.
     pub fn visible_to(&self, adult: bool) -> bool {
-        adult || !self.restricted
+        self.kind.playable() && (adult || !self.restricted)
     }
 }
 
@@ -135,6 +164,8 @@ pub struct NewMediaFile {
     pub mime: String,
     pub size_bytes: i64,
     pub duration_ms: Option<i64>,
+    /// Lower-case hex SHA-256 of the stored bytes.
+    pub sha256: Option<String>,
 }
 
 /// Cleans a title, falling back to `fallback` when empty.
@@ -153,13 +184,19 @@ pub fn clean_numbers(disc: Option<i64>, track: Option<i64>) -> (i64, Option<i64>
     )
 }
 
+/// Is this 64 lower-case hex digits?
+pub fn is_sha256_hex(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 pub fn add(conn: &Connection, m: &NewMediaFile) -> Result<i64> {
     let (disc, track) = clean_numbers(Some(m.disc), m.track);
     conn.execute(
         "INSERT INTO media_files (item_id, kind, title, disc, track, file, original_name, mime,
-                                  size_bytes, duration_ms, position, created_at)
+                                  size_bytes, duration_ms, position, created_at, sha256)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                 (SELECT coalesce(max(position), 0) + 1 FROM media_files WHERE item_id = ?1), ?11)",
+                 (SELECT coalesce(max(position), 0) + 1 FROM media_files WHERE item_id = ?1), ?11,
+                 ?12)",
         params![
             m.item_id,
             m.kind.as_str(),
@@ -171,7 +208,8 @@ pub fn add(conn: &Connection, m: &NewMediaFile) -> Result<i64> {
             m.mime,
             m.size_bytes,
             m.duration_ms.filter(|d| *d >= 0),
-            now()
+            now(),
+            m.sha256.as_deref().filter(|h| is_sha256_hex(h)),
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -185,7 +223,17 @@ pub fn get(conn: &Connection, id: i64) -> Result<Option<MediaFile>> {
         .optional()?)
 }
 
-/// An item's files in playing order.
+/// An item's files the Player may show (no archive files), in playing order.
+pub fn playable_for_item(conn: &Connection, item_id: i64) -> Result<Vec<MediaFile>> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "{SELECT} WHERE m.item_id = ?1 AND {PLAYABLE} ORDER BY {ORDER}"
+    ))?;
+    let rows = stmt.query_map([item_id], MediaFile::from_row)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Every file of an item, archive files included, in playing order (for
+/// the librarian and Library Rip).
 pub fn for_item(conn: &Connection, item_id: i64) -> Result<Vec<MediaFile>> {
     let mut stmt =
         conn.prepare_cached(&format!("{SELECT} WHERE m.item_id = ?1 ORDER BY {ORDER}"))?;
@@ -193,7 +241,8 @@ pub fn for_item(conn: &Connection, item_id: i64) -> Result<Vec<MediaFile>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Files by id that the viewer may play, keyed by id (missing ids skipped).
+/// Files by id that the viewer may play, keyed by id (missing ids and
+/// archive files skipped).
 pub fn visible_by_ids(
     conn: &Connection,
     ids: &[i64],
@@ -204,7 +253,8 @@ pub fn visible_by_ids(
     }
     let json = serde_json::to_string(ids)?;
     let mut stmt = conn.prepare_cached(&format!(
-        "{SELECT} WHERE m.id IN (SELECT value FROM json_each(?1)) AND (?2 OR i.restricted = 0)"
+        "{SELECT} WHERE m.id IN (SELECT value FROM json_each(?1)) AND (?2 OR i.restricted = 0)
+         AND {PLAYABLE}"
     ))?;
     let rows = stmt.query_map(params![json, adult], MediaFile::from_row)?;
     rows.map(|r| r.map(|m| (m.id, m)))
@@ -438,7 +488,7 @@ pub struct ItemWithMedia {
 }
 
 /// Escapes `%`, `_` and `\` for a LIKE pattern.
-fn like_pattern(q: &str) -> String {
+pub(crate) fn like_pattern(q: &str) -> String {
     let mut out = String::with_capacity(q.len() + 2);
     out.push('%');
     for c in q.chars() {
@@ -453,8 +503,10 @@ fn like_pattern(q: &str) -> String {
 
 /// Items with at least one file the viewer may play, and how many match.
 pub fn catalogue(conn: &Connection, q: &CatalogueQuery) -> Result<(Vec<ItemWithMedia>, i64)> {
+    // Archive files never count: an item with only those isn't listed.
     const FROM: &str = "FROM items i JOIN media_types t ON t.id = i.type_id
         WHERE EXISTS (SELECT 1 FROM media_files m WHERE m.item_id = i.id
+                      AND m.kind <> 'archive'
                       AND (:kind IS NULL OR m.kind = :kind))
           AND (:adult OR i.restricted = 0)
           AND (:item IS NULL OR i.id = :item)
@@ -479,14 +531,16 @@ pub fn catalogue(conn: &Connection, q: &CatalogueQuery) -> Result<(Vec<ItemWithM
     let order = if q.by_title {
         "i.title COLLATE NOCASE, i.id"
     } else {
-        "(SELECT max(m.created_at) FROM media_files m WHERE m.item_id = i.id) DESC, i.id DESC"
+        "(SELECT max(m.created_at) FROM media_files m WHERE m.item_id = i.id
+          AND m.kind <> 'archive') DESC, i.id DESC"
     };
     let sql = format!(
         "SELECT i.id, i.title, i.creator, i.year, t.name, t.slug, i.restricted,
             (SELECT p.file FROM photos p WHERE p.item_id = i.id ORDER BY p.position, p.id LIMIT 1),
-            (SELECT group_concat(DISTINCT m.kind) FROM media_files m WHERE m.item_id = i.id),
-            (SELECT count(*) FROM media_files m WHERE m.item_id = i.id),
-            (SELECT sum(m.duration_ms) FROM media_files m WHERE m.item_id = i.id),
+            (SELECT group_concat(DISTINCT m.kind) FROM media_files m
+             WHERE m.item_id = i.id AND {PLAYABLE}),
+            (SELECT count(*) FROM media_files m WHERE m.item_id = i.id AND {PLAYABLE}),
+            (SELECT sum(m.duration_ms) FROM media_files m WHERE m.item_id = i.id AND {PLAYABLE}),
             i.description
          {FROM} ORDER BY {order} LIMIT {} OFFSET {}",
         q.limit.clamp(1, 200),
@@ -499,6 +553,7 @@ pub fn catalogue(conn: &Connection, q: &CatalogueQuery) -> Result<(Vec<ItemWithM
             .unwrap_or_default()
             .split(',')
             .filter_map(MediaKind::parse)
+            .filter(|k| k.playable())
             .collect();
         kinds.sort_by_key(|k| MediaKind::ALL.iter().position(|a| a == k));
         Ok(ItemWithMedia {
@@ -537,6 +592,7 @@ pub(crate) mod tests {
             mime: "audio/mpeg".into(),
             size_bytes: 10,
             duration_ms: Some(1000),
+            sha256: None,
         }
     }
 

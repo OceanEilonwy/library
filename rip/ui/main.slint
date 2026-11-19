@@ -1,0 +1,1397 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Library Rip main window (lane E). Slint is used under its GPLv3 licence.
+//
+// This file only draws. Every property comes from src/app/view.rs (through
+// src/app/gui.rs) and every callback becomes an Event for the state
+// machine in src/app/state.rs.
+
+import { LineEdit, ComboBox, ScrollView, CheckBox, Palette } from "std-widgets.slint";
+import "./fonts/Fraunces-Variable-latin.ttf";
+import "./fonts/InstrumentSans-Variable-latin.ttf";
+
+export enum Page { connect, disc, rip, upload, done, settings }
+
+export struct UiChoice {
+    title: string,
+    detail: string,
+}
+
+export struct UiTrack {
+    number: string,
+    title: string,
+    length: string,
+}
+
+export struct UiProgress {
+    label: string,
+    title: string,
+    detail: string,
+    progress: float,
+    status: string,
+    tone: int,
+}
+
+// The Library's colours (static/css): paper, ink, accent.
+global Theme {
+    out property <color> paper: #fbf8f2;
+    out property <color> paper-2: #f2ece0;
+    out property <color> card: #ffffff;
+    out property <color> ink: #1f2629;
+    out property <color> muted: #4b5458;
+    out property <color> faint: #6f7578;
+    out property <color> rule: #c9c4b8;
+    out property <color> rule-soft: #e6e2da;
+    out property <color> accent: #a4553b;
+    out property <color> accent-dark: #7d3d28;
+    out property <color> accent-soft: #f4e4dc;
+    out property <color> ok: #3f6b3a;
+    out property <color> warn: #8a6a1f;
+    out property <color> bad: #9b2c2c;
+    out property <string> serif: "Fraunces";
+    out property <string> sans: "Instrument Sans";
+
+    public pure function tone(tone: int) -> color {
+        if (tone == 1) { return ok; }
+        if (tone == 2) { return warn; }
+        if (tone == 3) { return bad; }
+        return muted;
+    }
+}
+
+component Kicker inherits Text {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1.2px;
+    color: Theme.faint;
+    accessible-role: AccessibleRole.text;
+}
+
+component Heading inherits Text {
+    font-family: Theme.serif;
+    font-size: 26px;
+    font-weight: 500;
+    color: Theme.ink;
+    wrap: word-wrap;
+    accessible-role: AccessibleRole.text;
+}
+
+component Body inherits Text {
+    font-size: 14px;
+    color: Theme.muted;
+    wrap: word-wrap;
+    accessible-role: AccessibleRole.text;
+}
+
+// A button that looks like the Library's: terracotta when primary, paper
+// otherwise. Space or Enter presses it; the focus ring shows where Tab is.
+component LButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: false;
+    in property <bool> enabled: true;
+    in property <string> description;
+    callback clicked();
+
+    min-width: label.preferred-width + 32px;
+    min-height: 36px;
+    max-height: 36px;
+    horizontal-stretch: 0;
+    border-radius: 6px;
+    border-width: root.primary ? 0px : 1px;
+    border-color: root.enabled ? Theme.rule : Theme.rule-soft;
+    background: !root.enabled ? Theme.paper-2
+        : root.primary ? (touch.pressed || touch.has-hover ? Theme.accent-dark : Theme.accent)
+        : (touch.pressed ? Theme.rule-soft : touch.has-hover ? Theme.paper-2 : Theme.card);
+
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-description: root.description;
+    accessible-action-default => {
+        if (root.enabled) {
+            root.clicked();
+        }
+    }
+    forward-focus: focus;
+
+    focus := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    touch := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            focus.focus();
+            root.clicked();
+        }
+    }
+
+    label := Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.text;
+        font-size: 14px;
+        font-weight: 600;
+        color: !root.enabled ? Theme.faint : root.primary ? #ffffff : Theme.ink;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+
+    Rectangle {
+        x: -3px;
+        y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        border-radius: 8px;
+        border-width: 2px;
+        border-color: Theme.accent;
+        visible: focus.has-focus;
+    }
+}
+
+// A selectable two-line row (a MusicBrainz match, a catalogue entry).
+component ChoiceItem inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    in property <bool> selected;
+    callback clicked();
+
+    min-height: 52px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: root.selected ? Theme.accent : Theme.rule-soft;
+    background: root.selected ? Theme.accent-soft : touch.has-hover ? Theme.paper-2 : Theme.card;
+
+    accessible-role: list-item;
+    accessible-label: root.title;
+    accessible-description: root.detail;
+    accessible-item-selected: root.selected;
+    accessible-action-default => {
+        root.clicked();
+    }
+    forward-focus: focus;
+
+    focus := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    touch := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        mouse-cursor: pointer;
+        clicked => {
+            focus.focus();
+            root.clicked();
+        }
+    }
+
+    VerticalLayout {
+        padding: 8px;
+        padding-left: 12px;
+        spacing: 2px;
+        Text {
+            text: root.title;
+            font-size: 14px;
+            font-weight: 600;
+            color: Theme.ink;
+            overflow: elide;
+        }
+
+        Text {
+            text: root.detail;
+            font-size: 12px;
+            color: Theme.muted;
+            overflow: elide;
+        }
+    }
+
+    Rectangle {
+        x: -3px;
+        y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        border-radius: 8px;
+        border-width: 2px;
+        border-color: Theme.accent;
+        visible: focus.has-focus;
+    }
+}
+
+component Field inherits VerticalLayout {
+    in property <string> label;
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> enabled: true;
+    callback edited(string);
+    callback accepted(string);
+
+    spacing: 4px;
+    Text {
+        text: root.label;
+        font-size: 12px;
+        font-weight: 600;
+        color: Theme.muted;
+        accessible-role: none;
+    }
+
+    LineEdit {
+        text <=> root.text;
+        placeholder-text: root.placeholder;
+        enabled: root.enabled;
+        accessible-label: root.label;
+        edited(value) => {
+            root.edited(value);
+        }
+        accepted(value) => {
+            root.accepted(value);
+        }
+    }
+}
+
+component Bar inherits Rectangle {
+    in property <float> progress;
+    in property <color> fill: Theme.accent;
+    height: 6px;
+    border-radius: 3px;
+    background: Theme.rule-soft;
+    accessible-role: progress-indicator;
+    accessible-value: round(root.progress * 100) + "%";
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 1;
+    Rectangle {
+        x: 0;
+        height: parent.height;
+        width: parent.width * clamp(root.progress, 0, 1);
+        border-radius: 3px;
+        background: root.fill;
+    }
+}
+
+component Card inherits Rectangle {
+    background: Theme.card;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Theme.rule-soft;
+}
+
+// A line of text that can be selected and copied (addresses, links).
+component Copyable inherits Rectangle {
+    in property <string> text;
+    in property <string> label;
+    background: Theme.paper;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: Theme.rule-soft;
+    min-height: 32px;
+    TextInput {
+        x: 8px;
+        width: parent.width - 16px;
+        height: parent.height;
+        text: root.text;
+        read-only: true;
+        single-line: true;
+        vertical-alignment: center;
+        font-size: 13px;
+        color: Theme.ink;
+        accessible-label: root.label;
+    }
+}
+
+component ProgressLine inherits HorizontalLayout {
+    in property <UiProgress> item;
+    spacing: 12px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+    accessible-role: list-item;
+    accessible-label: root.item.label + " " + root.item.title + ": " + root.item.status;
+
+    Text {
+        text: root.item.label;
+        min-width: 56px;
+        horizontal-stretch: 0;
+        font-size: 13px;
+        font-weight: 600;
+        color: Theme.faint;
+        vertical-alignment: center;
+    }
+
+    VerticalLayout {
+        horizontal-stretch: 1;
+        spacing: 4px;
+        alignment: center;
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: root.item.title;
+                font-size: 14px;
+                color: Theme.ink;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+
+            Text {
+                text: root.item.detail;
+                font-size: 13px;
+                color: Theme.faint;
+                horizontal-stretch: 0;
+            }
+        }
+
+        Bar {
+            progress: root.item.progress;
+            fill: root.item.tone == 3 ? Theme.bad : root.item.tone == 1 ? Theme.ok : Theme.accent;
+        }
+    }
+
+    Text {
+        text: root.item.status;
+        min-width: 210px;
+        horizontal-stretch: 0;
+        font-size: 13px;
+        font-weight: root.item.tone == 0 ? 400 : 600;
+        color: Theme.tone(root.item.tone);
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+}
+
+component Step inherits HorizontalLayout {
+    in property <string> number;
+    in property <string> text;
+    in property <bool> current;
+    in property <bool> past;
+    spacing: 6px;
+    accessible-role: AccessibleRole.text;
+    accessible-label: "Step " + root.number + ", " + root.text + (root.current ? ", current" : "");
+    Rectangle {
+        width: 20px;
+        height: 20px;
+        border-radius: 10px;
+        background: root.current ? Theme.accent : root.past ? Theme.ink : transparent;
+        border-width: root.current || root.past ? 0px : 1px;
+        border-color: Theme.rule;
+        Text {
+            text: root.number;
+            font-size: 11px;
+            font-weight: 600;
+            color: root.current || root.past ? #ffffff : Theme.faint;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    Text {
+        text: root.text;
+        font-size: 13px;
+        font-weight: root.current ? 600 : 400;
+        color: root.current ? Theme.ink : Theme.faint;
+        vertical-alignment: center;
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "Library Rip";
+    icon: @image-url("icons/library-rip-256.png");
+    preferred-width: 920px;
+    preferred-height: 700px;
+    min-width: 640px;
+    min-height: 520px;
+    background: Theme.paper;
+    default-font-family: Theme.sans;
+    default-font-size: 14px;
+
+    // ----- shared -----
+    in property <Page> page: Page.connect;
+    in property <Page> step: Page.connect;
+    in property <string> connection: "Not connected";
+    in property <string> busy;
+    in property <string> problem;
+    in property <string> next-step;
+
+    // ----- Connect -----
+    in-out property <string> address;
+    in property <bool> can-connect: true;
+    in property <bool> waiting;
+    in property <string> waiting-title;
+    in property <string> waiting-detail;
+    in property <string> waiting-link;
+    in property <string> waiting-code;
+
+    // ----- Disc -----
+    in property <[string]> drives;
+    in-out property <int> drive-index: -1;
+    in property <bool> disc-ready;
+    in property <string> disc-summary;
+    in property <[UiChoice]> candidates;
+    in property <int> candidate-index: -1;
+    in property <string> lookup-status;
+    in-out property <string> release-search;
+    in-out property <string> album-title;
+    in-out property <string> album-artist;
+    in-out property <string> year;
+    in property <[UiTrack]> tracks;
+    in property <image> cover;
+    in property <bool> has-cover;
+    in property <bool> destination-existing;
+    in property <string> destination;
+    in-out property <string> item-search;
+    in property <[UiChoice]> items;
+    in property <int> item-index: -1;
+    in property <bool> can-rip;
+
+    // ----- Rip -----
+    in property <string> rip-title;
+    in property <string> rip-detail;
+    in property <[UiProgress]> rip-rows;
+    in property <string> ctdb;
+    in property <bool> rip-running;
+    in property <bool> rip-decision;
+    in property <[string]> rip-issues;
+    in property <bool> rip-failed;
+
+    // ----- Upload -----
+    in property <string> upload-title;
+    in property <[UiProgress]> upload-rows;
+    in property <bool> upload-running;
+    in property <bool> upload-stopped;
+
+    // ----- Done -----
+    in property <string> done-title;
+    in property <string> done-link;
+    in property <[string]> done-lines;
+    in property <bool> can-eject;
+
+    // ----- Settings -----
+    in-out property <string> offset-text;
+    in property <string> offset-hint;
+    in-out property <bool> test-and-copy;
+    in-out property <string> keep-text;
+    in property <string> settings-problem;
+    in property <bool> can-disconnect;
+    in property <string> version;
+    in property <string> source-url;
+
+    callback address-edited(string);
+    callback connect-browser();
+    callback connect-code();
+    callback cancel();
+    callback open-link(string);
+    callback drive-chosen(int);
+    callback refresh();
+    callback candidate-chosen(int);
+    callback manual-entry();
+    callback search-releases(string);
+    callback album-title-edited(string);
+    callback album-artist-edited(string);
+    callback year-edited(string);
+    callback track-title-edited(int, string);
+    callback new-item-chosen();
+    callback search-items(string);
+    callback item-chosen(int);
+    callback rip();
+    callback upload-anyway();
+    callback rip-again();
+    callback back-to-disc();
+    callback retry-upload();
+    callback eject();
+    callback another-disc();
+    callback open-settings();
+    callback close-settings();
+    callback offset-edited(string);
+    callback read-mode-chosen(bool);
+    callback keep-edited(string);
+    callback choose-folder();
+    callback disconnect();
+    callback dismiss-problem();
+
+    init => {
+        Palette.color-scheme = ColorScheme.light;
+    }
+
+    VerticalLayout {
+        // ----- header -----
+        Rectangle {
+            background: Theme.paper;
+            HorizontalLayout {
+                padding-left: 24px;
+                padding-right: 24px;
+                padding-top: 14px;
+                padding-bottom: 12px;
+                spacing: 16px;
+                VerticalLayout {
+                    horizontal-stretch: 0;
+                    alignment: center;
+                    Text {
+                        text: "Library Rip";
+                        font-family: Theme.serif;
+                        font-size: 24px;
+                        font-weight: 600;
+                        color: Theme.ink;
+                        accessible-role: AccessibleRole.text;
+                    }
+
+                    Kicker {
+                        text: "ARCHIVAL DISC RIPPER";
+                    }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+
+                Text {
+                    text: root.connection;
+                    font-size: 13px;
+                    color: Theme.muted;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+
+                LButton {
+                    text: root.page == Page.settings ? "Back" : "Settings";
+                    description: root.page == Page.settings ? "Close the settings" : "Read offset, read mode, local copies, disconnect and About";
+                    clicked => {
+                        if (root.page == Page.settings) {
+                            root.close-settings();
+                        } else {
+                            root.open-settings();
+                        }
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.rule;
+        }
+
+        // ----- steps -----
+        HorizontalLayout {
+            padding-left: 24px;
+            padding-right: 24px;
+            padding-top: 10px;
+            padding-bottom: 10px;
+            spacing: 20px;
+            alignment: start;
+            Step {
+                number: "1";
+                text: "Connect";
+                current: root.step == Page.connect;
+                past: root.step != Page.connect;
+            }
+
+            Step {
+                number: "2";
+                text: "Disc";
+                current: root.step == Page.disc;
+                past: root.step == Page.rip || root.step == Page.upload || root.step == Page.done;
+            }
+
+            Step {
+                number: "3";
+                text: "Rip";
+                current: root.step == Page.rip;
+                past: root.step == Page.upload || root.step == Page.done;
+            }
+
+            Step {
+                number: "4";
+                text: "Upload";
+                current: root.step == Page.upload;
+                past: root.step == Page.done;
+            }
+
+            Step {
+                number: "5";
+                text: "Done";
+                current: root.step == Page.done;
+            }
+        }
+
+        // ----- problem banner -----
+        if root.problem != "": Rectangle {
+            background: Theme.accent-soft;
+            border-width: 1px;
+            border-color: Theme.accent;
+            accessible-role: groupbox;
+            accessible-label: "Problem: " + root.problem;
+            accessible-description: root.next-step;
+            HorizontalLayout {
+                padding: 12px;
+                padding-left: 24px;
+                padding-right: 24px;
+                spacing: 16px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 2px;
+                    Text {
+                        text: root.problem;
+                        font-weight: 600;
+                        color: Theme.accent-dark;
+                        wrap: word-wrap;
+                    }
+
+                    Text {
+                        text: root.next-step;
+                        color: Theme.ink;
+                        wrap: word-wrap;
+                    }
+                }
+
+                LButton {
+                    text: "Dismiss";
+                    description: "Hide this message";
+                    clicked => {
+                        root.dismiss-problem();
+                    }
+                }
+            }
+        }
+
+        if root.busy != "": HorizontalLayout {
+            padding-left: 24px;
+            padding-right: 24px;
+            Text {
+                text: root.busy;
+                font-size: 13px;
+                font-italic: true;
+                color: Theme.faint;
+                accessible-role: AccessibleRole.text;
+            }
+        }
+
+        // ----- Connect -----
+        if root.page == Page.connect: VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+            alignment: start;
+            Heading {
+                text: "Connect to your library";
+            }
+
+            Body {
+                text: "Library Rip adds the discs you rip to your library. Type the address you use to open the library in a browser, then press Connect. A librarian approves the connection once.";
+            }
+
+            Field {
+                label: "Library address";
+                placeholder: "http://library.local:8080";
+                enabled: root.can-connect;
+                text <=> root.address;
+                edited(value) => {
+                    root.address-edited(value);
+                }
+                accepted => {
+                    root.connect-browser();
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
+                LButton {
+                    text: "Connect";
+                    primary: true;
+                    enabled: root.can-connect;
+                    description: "Opens the library in your browser to approve this computer";
+                    clicked => {
+                        root.connect-browser();
+                    }
+                }
+
+                LButton {
+                    text: "Connect with a code";
+                    enabled: root.can-connect;
+                    description: "Shows a code to type on the library from any device";
+                    clicked => {
+                        root.connect-code();
+                    }
+                }
+            }
+
+            if root.waiting: Card {
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 10px;
+                    Text {
+                        text: root.waiting-title;
+                        font-family: Theme.serif;
+                        font-size: 20px;
+                        color: Theme.ink;
+                        wrap: word-wrap;
+                    }
+
+                    if root.waiting-detail != "": Body {
+                        text: root.waiting-detail;
+                    }
+
+                    if root.waiting-code != "": Text {
+                        text: root.waiting-code;
+                        font-family: "monospace";
+                        font-size: 34px;
+                        font-weight: 600;
+                        letter-spacing: 3px;
+                        color: Theme.accent-dark;
+                        accessible-role: AccessibleRole.text;
+                        accessible-label: "Code: " + root.waiting-code;
+                    }
+
+                    if root.waiting-link != "": HorizontalLayout {
+                        spacing: 8px;
+                        Copyable {
+                            text: root.waiting-link;
+                            label: "Page address";
+                            horizontal-stretch: 1;
+                        }
+
+                        LButton {
+                            text: "Open page";
+                            clicked => {
+                                root.open-link(root.waiting-link);
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: start;
+                        LButton {
+                            text: "Cancel";
+                            description: "Stop waiting for the librarian";
+                            clicked => {
+                                root.cancel();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ----- Disc -----
+        if root.page == Page.disc: HorizontalLayout {
+            padding: 24px;
+            padding-top: 12px;
+            spacing: 24px;
+
+            // Left: drive and matches.
+            VerticalLayout {
+                width: 40%;
+                spacing: 12px;
+                Kicker {
+                    text: "THE DISC";
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        model: root.drives;
+                        current-index <=> root.drive-index;
+                        accessible-label: "Drive";
+                        enabled: root.drives.length > 0;
+                        selected => {
+                            root.drive-chosen(self.current-index);
+                        }
+                    }
+
+                    LButton {
+                        text: "Look again";
+                        description: "Read the drive again";
+                        clicked => {
+                            root.refresh();
+                        }
+                    }
+                }
+
+                Body {
+                    text: root.disc-summary;
+                    color: root.disc-ready ? Theme.ink : Theme.muted;
+                }
+
+                if root.disc-ready: Kicker {
+                    text: "MUSICBRAINZ MATCHES";
+                }
+
+                if root.lookup-status != "": Body {
+                    text: root.lookup-status;
+                    font-size: 13px;
+                }
+
+                if root.disc-ready: ScrollView {
+                    vertical-stretch: 1;
+                    min-height: 120px;
+                    VerticalLayout {
+                        spacing: 6px;
+                        alignment: start;
+                        for candidate[index] in root.candidates: ChoiceItem {
+                            title: candidate.title;
+                            detail: candidate.detail;
+                            selected: index == root.candidate-index;
+                            clicked => {
+                                root.candidate-chosen(index);
+                            }
+                        }
+                        if root.candidates.length > 0: ChoiceItem {
+                            title: "None of these";
+                            detail: "Type the album details by hand";
+                            selected: root.candidate-index < 0;
+                            clicked => {
+                                root.manual-entry();
+                            }
+                        }
+                    }
+                }
+
+                if root.disc-ready: HorizontalLayout {
+                    spacing: 8px;
+                    LineEdit {
+                        text <=> root.release-search;
+                        placeholder-text: "Search MusicBrainz by artist or album";
+                        accessible-label: "Search MusicBrainz";
+                        accepted(value) => {
+                            root.search-releases(value);
+                        }
+                    }
+
+                    LButton {
+                        text: "Search";
+                        clicked => {
+                            root.search-releases(root.release-search);
+                        }
+                    }
+                }
+
+                if !root.disc-ready: Rectangle {
+                    vertical-stretch: 1;
+                }
+            }
+
+            // Right: details, tracks, destination.
+            if root.disc-ready: ScrollView {
+                horizontal-stretch: 1;
+                VerticalLayout {
+                    spacing: 12px;
+                    padding-right: 12px;
+                    Kicker {
+                        text: "ALBUM DETAILS";
+                    }
+
+                    HorizontalLayout {
+                        spacing: 16px;
+                        Rectangle {
+                            width: 112px;
+                            height: 112px;
+                            border-radius: 4px;
+                            background: Theme.paper-2;
+                            border-width: 1px;
+                            border-color: Theme.rule-soft;
+                            if root.has-cover: Image {
+                                width: parent.width;
+                                height: parent.height;
+                                source: root.cover;
+                                image-fit: ImageFit.cover;
+                                accessible-role: image;
+                                accessible-label: "Front cover";
+                            }
+                            if !root.has-cover: Text {
+                                text: "No cover";
+                                color: Theme.faint;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 8px;
+                            Field {
+                                label: "Album";
+                                text <=> root.album-title;
+                                edited(value) => {
+                                    root.album-title-edited(value);
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Field {
+                                    label: "Artist";
+                                    text <=> root.album-artist;
+                                    horizontal-stretch: 3;
+                                    edited(value) => {
+                                        root.album-artist-edited(value);
+                                    }
+                                }
+
+                                Field {
+                                    label: "Year";
+                                    text <=> root.year;
+                                    horizontal-stretch: 1;
+                                    edited(value) => {
+                                        root.year-edited(value);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Kicker {
+                        text: "TRACKS";
+                    }
+
+                    for track[index] in root.tracks: HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: track.number;
+                            min-width: 28px;
+                            horizontal-stretch: 0;
+                            color: Theme.faint;
+                            vertical-alignment: center;
+                        }
+
+                        LineEdit {
+                            text: track.title;
+                            accessible-label: "Track " + track.number + " title";
+                            edited(value) => {
+                                root.track-title-edited(index, value);
+                            }
+                        }
+
+                        Text {
+                            text: track.length;
+                            min-width: 48px;
+                            horizontal-stretch: 0;
+                            horizontal-alignment: right;
+                            color: Theme.faint;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Kicker {
+                        text: "WHERE IT GOES";
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        ChoiceItem {
+                            title: "New catalogue entry";
+                            detail: "Made from the details above";
+                            selected: !root.destination-existing;
+                            clicked => {
+                                root.new-item-chosen();
+                            }
+                        }
+
+                        ChoiceItem {
+                            title: "Add to existing…";
+                            detail: "An entry already in the catalogue";
+                            selected: root.destination-existing;
+                            clicked => {
+                                root.search-items(root.item-search != "" ? root.item-search : root.album-title);
+                            }
+                        }
+                    }
+
+                    Body {
+                        text: root.destination;
+                        font-size: 13px;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        LineEdit {
+                            text <=> root.item-search;
+                            placeholder-text: "Search the catalogue";
+                            accessible-label: "Search the catalogue";
+                            accepted(value) => {
+                                root.search-items(value);
+                            }
+                        }
+
+                        LButton {
+                            text: "Search";
+                            clicked => {
+                                root.search-items(root.item-search);
+                            }
+                        }
+                    }
+
+                    for item[index] in root.items: ChoiceItem {
+                        title: item.title;
+                        detail: item.detail;
+                        selected: index == root.item-index;
+                        clicked => {
+                            root.item-chosen(index);
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: end;
+                        padding-top: 8px;
+                        LButton {
+                            text: "Rip";
+                            primary: true;
+                            enabled: root.can-rip;
+                            description: "Read the disc securely, check it and add it to the library";
+                            clicked => {
+                                root.rip();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ----- Rip -----
+        if root.page == Page.rip: VerticalLayout {
+            padding: 24px;
+            padding-top: 12px;
+            spacing: 10px;
+            Heading {
+                text: root.rip-title;
+            }
+
+            Body {
+                text: root.rip-detail;
+                font-size: 13px;
+            }
+
+            ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    padding-right: 12px;
+                    alignment: start;
+                    for row in root.rip-rows: ProgressLine {
+                        item: row;
+                    }
+                }
+            }
+
+            if root.ctdb != "": Body {
+                text: root.ctdb;
+                font-size: 13px;
+            }
+
+            if root.rip-decision: Card {
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 8px;
+                    Text {
+                        text: "Some of the disc could not be read reliably.";
+                        font-weight: 600;
+                        color: Theme.bad;
+                        wrap: word-wrap;
+                    }
+
+                    for issue in root.rip-issues: Body {
+                        text: "• " + issue;
+                    }
+
+                    Body {
+                        text: "Cleaning the disc and ripping again often helps. If you upload anyway, the rip log records exactly which parts are affected.";
+                    }
+
+                    HorizontalLayout {
+                        spacing: 12px;
+                        alignment: start;
+                        LButton {
+                            text: "Rip again";
+                            primary: true;
+                            clicked => {
+                                root.rip-again();
+                            }
+                        }
+
+                        LButton {
+                            text: "Upload anyway";
+                            clicked => {
+                                root.upload-anyway();
+                            }
+                        }
+
+                        LButton {
+                            text: "Back to the disc";
+                            clicked => {
+                                root.back-to-disc();
+                            }
+                        }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: end;
+                if root.rip-running: LButton {
+                    text: "Cancel";
+                    description: "Stop ripping; nothing is uploaded";
+                    clicked => {
+                        root.cancel();
+                    }
+                }
+                if root.rip-failed: LButton {
+                    text: "Rip again";
+                    primary: true;
+                    clicked => {
+                        root.rip-again();
+                    }
+                }
+                if root.rip-failed: LButton {
+                    text: "Back to the disc";
+                    clicked => {
+                        root.back-to-disc();
+                    }
+                }
+            }
+        }
+
+        // ----- Upload -----
+        if root.page == Page.upload: VerticalLayout {
+            padding: 24px;
+            padding-top: 12px;
+            spacing: 10px;
+            Heading {
+                text: root.upload-title;
+            }
+
+            ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    padding-right: 12px;
+                    alignment: start;
+                    for row in root.upload-rows: ProgressLine {
+                        item: row;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: end;
+                if root.upload-running: LButton {
+                    text: "Cancel";
+                    description: "Stop sending; files already sent stay on the library";
+                    clicked => {
+                        root.cancel();
+                    }
+                }
+                if root.upload-stopped: LButton {
+                    text: "Try again";
+                    primary: true;
+                    description: "Send the remaining files";
+                    clicked => {
+                        root.retry-upload();
+                    }
+                }
+                if root.upload-stopped: LButton {
+                    text: "Back to the disc";
+                    clicked => {
+                        root.back-to-disc();
+                    }
+                }
+            }
+        }
+
+        // ----- Done -----
+        if root.page == Page.done: VerticalLayout {
+            padding: 24px;
+            spacing: 14px;
+            alignment: start;
+            Heading {
+                text: root.done-title;
+                font-size: 30px;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                Copyable {
+                    text: root.done-link;
+                    label: "Item address";
+                    horizontal-stretch: 1;
+                }
+
+                LButton {
+                    text: "Open in the library";
+                    primary: true;
+                    clicked => {
+                        root.open-link(root.done-link);
+                    }
+                }
+            }
+
+            for line in root.done-lines: Body {
+                text: line;
+            }
+
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
+                LButton {
+                    text: "Eject";
+                    enabled: root.can-eject;
+                    clicked => {
+                        root.eject();
+                    }
+                }
+
+                LButton {
+                    text: "Rip another disc";
+                    clicked => {
+                        root.another-disc();
+                    }
+                }
+            }
+        }
+
+        // ----- Settings -----
+        if root.page == Page.settings: ScrollView {
+            VerticalLayout {
+                padding: 24px;
+                padding-top: 12px;
+                spacing: 12px;
+                Heading {
+                    text: "Settings";
+                }
+
+                Kicker {
+                    text: "READING";
+                }
+
+                Field {
+                    label: "Drive read offset (samples)";
+                    placeholder: "Look it up";
+                    text <=> root.offset-text;
+                    edited(value) => {
+                        root.offset-edited(value);
+                    }
+                }
+
+                Body {
+                    text: root.offset-hint;
+                    font-size: 13px;
+                }
+
+                CheckBox {
+                    text: "Test and copy: read every track twice and compare (slower)";
+                    checked <=> root.test-and-copy;
+                    toggled => {
+                        root.read-mode-chosen(self.checked);
+                    }
+                }
+
+                Kicker {
+                    text: "LOCAL COPY";
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: stretch;
+                    Field {
+                        label: "Also keep each rip in this folder";
+                        placeholder: "Not kept";
+                        text <=> root.keep-text;
+                        horizontal-stretch: 1;
+                        edited(value) => {
+                            root.keep-edited(value);
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: end;
+                        LButton {
+                            text: "Choose…";
+                            description: "Pick a folder for local copies";
+                            clicked => {
+                                root.choose-folder();
+                            }
+                        }
+                    }
+                }
+
+                if root.settings-problem != "": Text {
+                    text: root.settings-problem;
+                    color: Theme.bad;
+                    wrap: word-wrap;
+                }
+
+                Kicker {
+                    text: "LIBRARY";
+                }
+
+                Body {
+                    text: root.connection;
+                }
+
+                HorizontalLayout {
+                    alignment: start;
+                    LButton {
+                        text: "Disconnect";
+                        enabled: root.can-disconnect;
+                        description: "Forget this library and revoke this computer's key";
+                        clicked => {
+                            root.disconnect();
+                        }
+                    }
+                }
+
+                Kicker {
+                    text: "ABOUT";
+                }
+
+                Text {
+                    text: root.version;
+                    font-family: Theme.serif;
+                    font-size: 18px;
+                    color: Theme.ink;
+                }
+
+                Body {
+                    text: "Library Rip is free software: you can use, study, share and change it under the GNU Affero General Public License, version 3 or (at your option) any later version. It comes with no warranty. If you run a changed version for other people, you must offer them its source code.";
+                }
+
+                Body {
+                    text: "Built with Slint (GPLv3), libcdio and libcdio-paranoia (GPLv3) and libFLAC (BSD). Typefaces: Fraunces and Instrument Sans (SIL Open Font License).";
+                    font-size: 13px;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Copyable {
+                        text: root.source-url;
+                        label: "Source code address";
+                        horizontal-stretch: 1;
+                    }
+
+                    LButton {
+                        text: "Source code";
+                        description: "Open the source code in your browser";
+                        clicked => {
+                            root.open-link(root.source-url);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

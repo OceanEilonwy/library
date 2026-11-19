@@ -121,6 +121,15 @@ fn disposition(name: &str) -> String {
     format!("inline; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
 }
 
+/// Makes a file response save to disk instead of opening in the browser.
+pub fn make_attachment(res: &mut Response, name: &str) {
+    if res.headers().contains_key(header::CONTENT_DISPOSITION) {
+        let value = disposition(name).replacen("inline", "attachment", 1);
+        res.headers_mut()
+            .insert(header::CONTENT_DISPOSITION, header_value(&value));
+    }
+}
+
 fn header_value(s: &str) -> HeaderValue {
     HeaderValue::from_str(s).unwrap_or_else(|_| HeaderValue::from_static(""))
 }

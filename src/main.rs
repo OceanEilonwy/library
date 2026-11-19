@@ -302,6 +302,12 @@ async fn serve(cfg: Config) -> Result<()> {
         .with_context(|| format!("creating {}", cfg.data_dir.display()))?;
     std::fs::create_dir_all(cfg.photos_dir())?;
     std::fs::create_dir_all(cfg.media_dir())?;
+    // Uploads a previous run was killed in the middle of.
+    match web::studio::sweep_partial_uploads(&cfg.media_dir()) {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(files = n, "removed unfinished uploads"),
+        Err(e) => tracing::warn!(error = %e, "could not clear unfinished uploads"),
+    }
     let db = Db::open(&cfg.db_path())?;
     let key = web::auth::Auth::load_or_create_key(&cfg.secret_path())?;
     let password_hash = match (&cfg.admin_password_hash, &cfg.admin_password) {
@@ -360,15 +366,20 @@ async fn serve(cfg: Config) -> Result<()> {
         candidates: Arc::new(lookup::CandidateCache::default()),
         auth: Arc::new(auth),
         throttles: Arc::new(web::accounts::Throttles::default()),
+        rip: Arc::new(web::rip::RipState::default()),
     };
     let app = web::router(state);
     let listener = tokio::net::TcpListener::bind(cfg.listen)
         .await
         .with_context(|| format!("listening on {}", cfg.listen))?;
     tracing::info!(addr = %cfg.listen, "library is open");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(web::shutdown_signal())
-        .await?;
+    // Connection info gives the rate limits each client's address.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(web::shutdown_signal())
+    .await?;
     Ok(())
 }
 

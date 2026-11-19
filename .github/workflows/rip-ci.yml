@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Library Rip: formatting, lints and tests for changes under rip/.
+name: Library Rip CI
+
+on:
+  pull_request:
+    paths:
+      - "rip/**"
+      # tests/e2e_headless.rs runs the ripper against the real server.
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "library.dev.toml"
+      - ".github/workflows/rip-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "rip/**"
+      # tests/e2e_headless.rs runs the ripper against the real server.
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "library.dev.toml"
+      - ".github/workflows/rip-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rip-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt, clippy, test (Linux)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: rip
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system libraries
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libcdio-dev libcdio-paranoia-dev libflac-dev \
+            libfontconfig-dev libxkbcommon-dev libdbus-1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # rip/ itself, and the root server that tests/e2e_headless.rs
+          # builds and starts.
+          workspaces: |
+            rip
+            .
+
+      - name: Formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Tests (including the end-to-end rip against the real server)
+        run: cargo test --locked
+
+      - name: Build without libcdio or the test tools
+        run: cargo check --locked --no-default-features
+
+      # Release builds (rip-release.yml) use these features: the test tools
+      # (`testsupport`: --fake-disc, headless, make-fake-disc,
+      # mock-services) must not be in them.
+      - name: Builds without testsupport have no test commands
+        run: |
+          cargo build --locked --no-default-features --features cdio
+          ./target/debug/library-rip --help
+          for command in make-fake-disc mock-services headless; do
+            if ./target/debug/library-rip "$command" --help; then
+              echo "::error::$command is in a build without testsupport"
+              exit 1
+            fi
+          done
+          if ./target/debug/library-rip --fake-disc /tmp --help; then
+            echo "::error::--fake-disc is in a build without testsupport"
+            exit 1
+          fi

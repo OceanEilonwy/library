@@ -444,6 +444,72 @@ pub fn summary(conn: &Connection, id: i64) -> Result<Option<Summary>> {
     Ok(summaries(conn, &[id])?.pop())
 }
 
+/// A catalogue entry Library Rip could attach files to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachCandidate {
+    pub id: i64,
+    pub title: String,
+    pub creator: String,
+    pub year: Option<i64>,
+    pub identifier: String,
+    /// Digital files already on it (archive files included).
+    pub file_count: i64,
+}
+
+/// Entries whose title or creator contain every word of `q` (or whose
+/// identifier is `q` exactly, listed first), optionally of one type.
+pub fn find_for_attach(
+    conn: &Connection,
+    q: &str,
+    type_slug: &str,
+    limit: i64,
+) -> Result<Vec<AttachCandidate>> {
+    let words: Vec<String> = q
+        .split_whitespace()
+        .take(8)
+        .map(super::media_files::like_pattern)
+        .collect();
+    let exact = q.trim();
+    let mut sql = String::from(
+        "SELECT i.id, i.title, i.creator, i.year, i.identifier,
+                (SELECT count(*) FROM media_files m WHERE m.item_id = i.id)
+         FROM items i JOIN media_types t ON t.id = i.type_id
+         WHERE (?1 = '' OR t.slug = ?1)",
+    );
+    let mut values: Vec<rusqlite::types::Value> =
+        vec![type_slug.trim().to_owned().into(), exact.to_owned().into()];
+    if !words.is_empty() {
+        let mut all = Vec::new();
+        for w in words {
+            values.push(w.into());
+            let n = values.len();
+            all.push(format!(
+                "(i.title LIKE ?{n} ESCAPE '\\' OR i.creator LIKE ?{n} ESCAPE '\\')"
+            ));
+        }
+        sql.push_str(&format!(
+            " AND ((?2 <> '' AND i.identifier = ?2) OR ({}))",
+            all.join(" AND ")
+        ));
+    }
+    sql.push_str(&format!(
+        " ORDER BY (?2 <> '' AND i.identifier = ?2) DESC, i.title COLLATE NOCASE, i.id LIMIT {}",
+        limit.clamp(1, 100)
+    ));
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(values), |r| {
+        Ok(AttachCandidate {
+            id: r.get(0)?,
+            title: r.get(1)?,
+            creator: r.get(2)?,
+            year: r.get(3)?,
+            identifier: r.get(4)?,
+            file_count: r.get(5)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 pub fn count(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row("SELECT count(*) FROM items", [], |r| r.get(0))?)
 }

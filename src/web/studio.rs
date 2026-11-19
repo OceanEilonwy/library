@@ -15,6 +15,7 @@ use axum::http::header::{self, HeaderMap};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 use super::accounts::{ApiError, ApiResult};
@@ -34,6 +35,7 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/items/{id}/media/{mid}", post(update))
         .route("/admin/items/{id}/media/{mid}/move", post(shift))
         .route("/admin/items/{id}/media/{mid}/delete", post(delete))
+        .route("/admin/items/{id}/media/{mid}/download", get(download))
         .route(
             "/admin/items/{id}/media/{mid}/subtitles",
             post(add_subtitle),
@@ -201,13 +203,6 @@ pub async fn delete_subtitle(
     after_change(&st, &viewer, id, "removed").await
 }
 
-#[derive(Serialize)]
-struct Created {
-    id: i64,
-    title: String,
-    kind: MediaKind,
-}
-
 fn wants_json(headers: &HeaderMap) -> bool {
     headers
         .get(header::ACCEPT)
@@ -219,6 +214,26 @@ fn invalid(field: &str, msg: impl Into<String>) -> ApiError {
     let mut bad = Invalid::default();
     bad.add(field, msg);
     ApiError::Invalid(bad)
+}
+
+/// `GET /admin/items/{id}/media/{mid}/download`: any file of the item, as
+/// a download (how the librarian gets archive files back).
+pub async fn download(
+    State(st): State<AppState>,
+    Admin(_): Admin,
+    Path((id, mid)): Path<(i64, i64)>,
+    headers: HeaderMap,
+) -> Res {
+    let m = st
+        .db
+        .read(move |c| media_files::get(c, mid))
+        .await?
+        .filter(|m| m.item_id == id && crate::media::is_safe_name(&m.file))
+        .ok_or(AppError::NotFound)?;
+    let path = st.media_dir().join(&m.file);
+    let mut res = super::stream::serve_file(&path, &m.mime, &m.original_name, &headers).await;
+    super::stream::make_attachment(&mut res, &m.original_name);
+    Ok(res)
 }
 
 /// Adds subtitles (.srt is converted to WebVTT) to a video of the item.
@@ -308,13 +323,103 @@ async fn save_subtitle(st: &AppState, id: i64, mid: i64, form: Fields) -> ApiRes
     }
 }
 
+/// Largest text field (title, kind, …) accepted alongside an upload.
+const MAX_TEXT_FIELD_BYTES: usize = 4 << 10;
+/// Most text fields accepted alongside an upload.
+const MAX_TEXT_FIELDS: usize = 32;
+/// Characters of a text field kept.
+const TEXT_FIELD_CHARS: usize = 1000;
+
+/// Reads one non-file multipart field, at most [`MAX_TEXT_FIELD_BYTES`]
+/// (chunk by chunk, so a huge field is refused without being held in
+/// memory), keeping its first [`TEXT_FIELD_CHARS`] characters.
+async fn read_text_field(field: &mut Field<'_>) -> ApiResult<String> {
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = field
+        .chunk()
+        .await
+        .map_err(|e| ApiError::BadRequest(e.body_text()))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > MAX_TEXT_FIELD_BYTES {
+            return Err(ApiError::TooLarge(format!(
+                "The {} field is too long (at most {} KB).",
+                field.name().unwrap_or("form"),
+                MAX_TEXT_FIELD_BYTES >> 10
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let text = String::from_utf8(bytes)
+        .map_err(|_| ApiError::BadRequest("A form field isn't valid UTF-8 text.".into()))?;
+    Ok(text.chars().take(TEXT_FIELD_CHARS).collect())
+}
+
+/// Deletes an upload's file unless told it is safe: while it is streamed
+/// (`….part`), and after it is renamed until its database row exists. A
+/// request dropped half way (the client went away, the server is shutting
+/// down) so leaves nothing behind.
+struct PendingFile {
+    path: Option<PathBuf>,
+}
+
+impl PendingFile {
+    fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    /// The file is now at `path` (after a rename); delete that instead.
+    fn moved_to(&mut self, path: PathBuf) {
+        self.path = Some(path);
+    }
+
+    /// The file is recorded: keep it.
+    fn keep(mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for PendingFile {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take()
+            && let Err(e) = std::fs::remove_file(&path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(file = %path.display(), error = %e, "could not delete an unfinished upload");
+        }
+    }
+}
+
+/// Deletes uploads left half-written (`*.part`) in the media folder by a
+/// server that stopped mid-upload. Run at start-up, before any upload can
+/// be in progress. Returns how many were removed.
+pub fn sweep_partial_uploads(media_dir: &FsPath) -> std::io::Result<usize> {
+    let entries = match std::fs::read_dir(media_dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    let mut removed = 0;
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let is_partial = name.to_str().is_some_and(|n| n.ends_with(".part"));
+        if is_partial && entry.file_type()?.is_file() {
+            std::fs::remove_file(entry.path())?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 /// Streams one multipart file field to `path`, refusing more than `max`
-/// bytes. The partial file is removed on any failure.
-async fn receive(field: &mut Field<'_>, path: &FsPath, max: u64) -> ApiResult<u64> {
+/// bytes, and works out its SHA-256 on the way. Returns the size and the
+/// digest (lower-case hex). The partial file is removed on any failure.
+async fn receive(field: &mut Field<'_>, path: &FsPath, max: u64) -> ApiResult<(u64, String)> {
     let result = async {
         let mut out = tokio::fs::File::create(path)
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
+        let mut hasher = Sha256::new();
         let mut size: u64 = 0;
         while let Some(chunk) = field.chunk().await.map_err(|e| {
             ApiError::BadRequest(format!("The upload was interrupted: {}", e.body_text()))
@@ -323,6 +428,7 @@ async fn receive(field: &mut Field<'_>, path: &FsPath, max: u64) -> ApiResult<u6
             if size > max {
                 return Err(too_large(max));
             }
+            hasher.update(&chunk);
             out.write_all(&chunk)
                 .await
                 .map_err(|e| ApiError::Internal(e.into()))?;
@@ -330,7 +436,7 @@ async fn receive(field: &mut Field<'_>, path: &FsPath, max: u64) -> ApiResult<u6
         out.flush()
             .await
             .map_err(|e| ApiError::Internal(e.into()))?;
-        Ok(size)
+        Ok((size, super::rip::hex(&hasher.finalize())))
     }
     .await;
     if result.is_err() {
@@ -348,11 +454,35 @@ fn too_large(max: u64) -> ApiError {
 
 /// A stored upload waiting for its database row.
 struct Received {
+    /// Deletes the stored file unless the row is written.
+    file: PendingFile,
     stored: String,
     original: String,
     kind: MediaKind,
     mime: &'static str,
     size: u64,
+    sha256: String,
+}
+
+/// A media file just added.
+#[derive(Serialize)]
+pub struct Created {
+    pub id: i64,
+    pub title: String,
+    pub kind: MediaKind,
+}
+
+/// The `sha256` field, if sent: 64 hex digits (any case).
+fn expected_sha256(meta: &HashMap<String, String>) -> ApiResult<Option<String>> {
+    match meta.get("sha256").map(|h| h.trim().to_ascii_lowercase()) {
+        None => Ok(None),
+        Some(h) if h.is_empty() => Ok(None),
+        Some(h) if media_files::is_sha256_hex(&h) => Ok(Some(h)),
+        Some(_) => Err(invalid(
+            "sha256",
+            "That isn't a SHA-256 checksum (64 hexadecimal digits).",
+        )),
+    }
 }
 
 /// `POST /admin/items/{id}/media/upload`: one file plus its details
@@ -364,6 +494,22 @@ pub async fn upload(
     headers: HeaderMap,
     multipart: Result<Multipart, MultipartRejection>,
 ) -> ApiResult {
+    let created = receive_media(&st, id, &headers, multipart, false).await?;
+    Ok((StatusCode::CREATED, Json(created)).into_response())
+}
+
+/// Receives one media file for item `id` (shared by the studio and the rip
+/// API): text fields `kind`, `title`, `disc`, `track`, `duration_ms` and
+/// `sha256` come before the `file`, which is streamed to disk while its
+/// SHA-256 is worked out. A `sha256` that doesn't match refuses the file;
+/// with `require_sha256` (Library Rip) one must be sent.
+pub(super) async fn receive_media(
+    st: &AppState,
+    id: i64,
+    headers: &HeaderMap,
+    multipart: Result<Multipart, MultipartRejection>,
+    require_sha256: bool,
+) -> ApiResult<Created> {
     let max = st.cfg.media.max_upload_bytes();
     let declared = headers
         .get(header::CONTENT_LENGTH)
@@ -396,53 +542,78 @@ pub async fn upload(
         {
             let name = field.name().unwrap_or("").to_owned();
             let Some(file_name) = field.file_name().map(str::to_owned) else {
-                let text = field
-                    .text()
-                    .await
-                    .map_err(|e| ApiError::BadRequest(e.body_text()))?;
-                meta.insert(name, text.chars().take(1000).collect());
+                if meta.len() >= MAX_TEXT_FIELDS && !meta.contains_key(&name) {
+                    return Err(ApiError::BadRequest(
+                        "Too many form fields came with the file.".into(),
+                    ));
+                }
+                let text = read_text_field(&mut field).await?;
+                meta.insert(name, text);
                 continue;
             };
             if name != "file" || received.is_some() {
                 return Err(ApiError::BadRequest("Send one file per upload.".into()));
             }
-            let wanted = meta.get("kind").and_then(|k| MediaKind::parse(k));
+            let expected = expected_sha256(&meta)?;
+            if require_sha256 && expected.is_none() {
+                return Err(invalid(
+                    "sha256",
+                    "Send the file's SHA-256 (the sha256 field) before the file.",
+                ));
+            }
+            let wanted = match meta.get("kind").map(|k| k.trim()) {
+                None | Some("") => None,
+                Some(k) => Some(MediaKind::parse(k).ok_or_else(|| {
+                    invalid(
+                        "kind",
+                        "The kind should be audio, video, document or archive.",
+                    )
+                })?),
+            };
             let (kind, mime) =
                 digital::classify(&file_name, wanted, field.content_type().unwrap_or(""))
                     .map_err(|m| invalid("file", m))?;
             let ext = digital::extension(&file_name).unwrap_or_default();
             let stored = digital::random_name(&ext);
             let partial = dir.join(format!("{stored}.part"));
-            let size = receive(&mut field, &partial, max).await?;
+            // Deletes the file on every way out but success, including the
+            // request being dropped mid-write.
+            let mut file = PendingFile::new(partial.clone());
+            let (size, sha256) = receive(&mut field, &partial, max).await?;
             if size == 0 {
-                let _ = tokio::fs::remove_file(&partial).await;
                 return Err(invalid("file", "That file is empty."));
             }
-            tokio::fs::rename(&partial, dir.join(&stored))
+            if expected.as_deref().is_some_and(|e| e != sha256) {
+                return Err(invalid(
+                    "sha256",
+                    "The file arrived damaged: its SHA-256 doesn't match the one sent. Send it again.",
+                ));
+            }
+            let final_path = dir.join(&stored);
+            tokio::fs::rename(&partial, &final_path)
                 .await
                 .map_err(|e| ApiError::Internal(e.into()))?;
+            file.moved_to(final_path);
             let original = file_name
                 .rsplit(['/', '\\'])
                 .next()
                 .unwrap_or(&file_name)
                 .to_owned();
             received = Some(Received {
+                file,
                 stored,
                 original,
                 kind,
                 mime,
                 size,
+                sha256,
             });
         }
         Ok(())
     }
     .await;
-    if let Err(e) = outcome {
-        if let Some(r) = received {
-            remove_files(dir, vec![r.stored]);
-        }
-        return Err(e);
-    }
+    // On failure, dropping `received` deletes its file.
+    outcome?;
     let Some(r) = received else {
         return Err(invalid("file", "No file arrived. Choose a file to upload."));
     };
@@ -463,30 +634,78 @@ pub async fn upload(
             .ok()
             .filter(|d| d.is_finite() && *d >= 0.0 && *d < 1e12)
             .map(|d| d.round() as i64),
+        sha256: Some(r.sha256),
     };
     let title = new.title.clone();
     let kind = new.kind;
+    let pending = r.file;
     match st.db.write(move |c| media_files::add(c, &new)).await {
         Ok(mid) => {
+            pending.keep();
             tracing::info!(
                 item = id,
                 media = mid,
                 bytes = r.size,
                 "digital copy uploaded"
             );
-            Ok((
-                StatusCode::CREATED,
-                Json(Created {
-                    id: mid,
-                    title,
-                    kind,
-                }),
-            )
-                .into_response())
+            Ok(Created {
+                id: mid,
+                title,
+                kind,
+            })
         }
-        Err(e) => {
-            remove_files(dir, vec![r.stored]);
-            Err(e.into())
+        // Dropping `pending` deletes the file.
+        Err(e) => Err(e.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_files_are_deleted_unless_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let partial = dir.path().join("a.mp3.part");
+        let stored = dir.path().join("a.mp3");
+
+        // Dropped while streaming.
+        std::fs::write(&partial, b"x").unwrap();
+        drop(PendingFile::new(partial.clone()));
+        assert!(!partial.exists());
+
+        // Renamed, then dropped before the database row was written.
+        std::fs::write(&partial, b"x").unwrap();
+        let mut file = PendingFile::new(partial.clone());
+        std::fs::rename(&partial, &stored).unwrap();
+        file.moved_to(stored.clone());
+        drop(file);
+        assert!(!stored.exists());
+
+        // Recorded: kept.
+        std::fs::write(&stored, b"x").unwrap();
+        PendingFile::new(stored.clone()).keep();
+        assert!(stored.exists());
+
+        // Already gone: nothing to do.
+        drop(PendingFile::new(dir.path().join("missing.part")));
+    }
+
+    #[test]
+    fn start_up_sweeps_only_partial_uploads() {
+        let dir = tempfile::tempdir().unwrap();
+        let media = dir.path().join("media");
+        assert_eq!(sweep_partial_uploads(&media).unwrap(), 0, "no folder yet");
+        std::fs::create_dir_all(media.join("keep.part")).unwrap();
+        for f in ["a.flac.part", "b.mp4.part", "c.flac", "d.vtt", "part"] {
+            std::fs::write(media.join(f), b"x").unwrap();
         }
+        assert_eq!(sweep_partial_uploads(&media).unwrap(), 2);
+        let mut left: Vec<String> = std::fs::read_dir(&media)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["c.flac", "d.vtt", "keep.part", "part"]);
     }
 }

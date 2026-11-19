@@ -1,4 +1,5 @@
-import { Show, useContext } from 'solid-js';
+import { Show, createSignal, onSettled, useContext } from 'solid-js';
+import type { ServerInfo } from '../api';
 import { useNavigate } from '@solidjs/router';
 import { to } from '../links';
 import { updateStatusText } from '../update';
@@ -13,8 +14,13 @@ const buildDate = new Date(__BUILD_TIME__).toLocaleDateString('en-GB', {
 });
 
 export default function Settings() {
-  const { session, updates, install, network } = useContext(ServicesContext);
+  const { api, session, updates, install, network } = useContext(ServicesContext);
   const navigate = useNavigate();
+  const [server, setServer] = createSignal<ServerInfo | null>(null);
+  onSettled(() => {
+    // Offline or an older server: the About row simply has no link.
+    api.info().then(setServer, () => setServer(null));
+  });
 
   async function signOut() {
     try {
@@ -117,6 +123,38 @@ export default function Settings() {
             </div>
           </div>
         </Show>
+      </section>
+
+      <section class="settings-group" aria-labelledby="about-title">
+        <h2 class="section-title" id="about-title">
+          About
+        </h2>
+        <div class="settings-row">
+          <span class="settings-icon">
+            <Icon name="document" />
+          </span>
+          <div>
+            <Show when={server()} fallback={<p class="settings-title">The Library</p>}>
+              {(info) => (
+                <p class="settings-title">
+                  {info().name}, version {info().version}
+                </p>
+              )}
+            </Show>
+            <p class="muted">
+              The Library and this Player are free software: you can use, study, share and change them under the GNU
+              Affero General Public License, version 3 or (at your option) any later version. They come with no
+              warranty.
+            </p>
+          </div>
+          <Show when={server()?.sourceUrl}>
+            {(url) => (
+              <a class="button ghost" href={url()} target="_blank" rel="noopener">
+                Source code
+              </a>
+            )}
+          </Show>
+        </div>
       </section>
 
       <section class="settings-group hide-touch">

@@ -449,6 +449,8 @@ pub struct DeskView<'a> {
     pub types: &'a [(MediaType, Vec<FieldDef>)],
     /// Player accounts waiting for approval.
     pub accounts_waiting: i64,
+    /// Library Rip installs that are connected.
+    pub rippers: &'a [crate::db::api_keys::ApiKey],
     pub flash: Option<&'a str>,
 }
 
@@ -478,6 +480,7 @@ pub fn desk(ctx: &Ctx, v: &DeskView) -> Markup {
                     }
                 }
                 a.btn href="/player/" { "Open the Player" }
+                a.btn href="/ripper" { "Get Library Rip" }
             }
             div.two-col {
                 section.left aria-labelledby="settings-title" {
@@ -540,6 +543,7 @@ pub fn desk(ctx: &Ctx, v: &DeskView) -> Markup {
                     }
                 }
             }
+            (super::rip::connected_rippers(v.rippers))
         },
     )
 }
@@ -736,6 +740,7 @@ pub fn studio_page(
             div.row-actions.desk-actions {
                 a.btn href={ "/items/" (it.id) } { "← Back to the entry" }
                 a.btn href="/player/" { "Open the Player" }
+                a.btn href="/ripper" { "Get Library Rip" }
             }
             section #studio.studio data-item=(it.id) data-max-bytes=(max_bytes) aria-labelledby="studio-title" {
                 h2 #studio-title .kicker { "I. Add files" }
@@ -884,6 +889,9 @@ pub fn media_list(d: &StudioData) -> Markup {
                                             hx-target="#media-list" hx-swap="outerHTML" {
                                             button.btn.small type="submit" name="dir" value="up" disabled[n == 0] aria-label={ "Move " (m.title) " up" } { "↑" }
                                             button.btn.small type="submit" name="dir" value="down" disabled[n == last] aria-label={ "Move " (m.title) " down" } { "↓" }
+                                        }
+                                        @if m.kind == MediaKind::Archive {
+                                            a.btn.small href={ "/admin/items/" (id) "/media/" (m.id) "/download" } download { "Download" }
                                         }
                                         form method="post" action={ "/admin/items/" (id) "/media/" (m.id) "/delete" }
                                             hx-post={ "/admin/items/" (id) "/media/" (m.id) "/delete" }

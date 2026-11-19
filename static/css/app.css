@@ -326,6 +326,18 @@ details.add-field[open] > summary { margin-bottom: 14px; }
 .unlock-page { max-width: 440px; margin: 48px auto; display: flex; flex-direction: column; gap: 16px; }
 
 footer.site { border-top: 1px solid var(--ink); margin-top: 48px; padding: 18px 0 32px; font-size: 13px; color: var(--muted); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+footer.site .footer-links { display: flex; gap: 16px; flex-wrap: wrap; }
+
+/* Library Rip: connecting, downloads, the desk's connected rippers. */
+.connect-question { font-family: var(--serif); font-size: 22px; line-height: 1.35; margin: 0; }
+.connect .row-actions { gap: 12px; }
+#rippers { border-top: 1.5px solid var(--ink); padding: 18px 0 48px; }
+.builds .sha { overflow-wrap: anywhere; margin-top: 4px; }
+.makemkv { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; }
+.makemkv dt { font-weight: 600; }
+.makemkv dd { margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 520px) { .makemkv { grid-template-columns: 1fr; } .makemkv dd { margin-bottom: 8px; } }
+.archive-files a { overflow-wrap: anywhere; }
 
 /* Smooth page-to-page navigation where supported (no blank frame). */
 @view-transition { navigation: auto; }

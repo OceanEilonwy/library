@@ -80,7 +80,7 @@ here in the same change.
 - **No transcoding.** Uploads are stored byte-for-byte. The only conversion
   is SubRip (`.srt`) subtitles to WebVTT text on upload (a text rewrite).
 
-## Data (schema v2, migration in `src/db/mod.rs`)
+## Data (schema v2, migration in `src/db/mod.rs`; version 3 adds Library Rip's `archive` kind, `media_files.sha256` and `api_keys`, see docs/rip.md)
 
 ```sql
 ALTER TABLE items ADD COLUMN restricted INTEGER NOT NULL DEFAULT 0 CHECK (restricted IN (0,1));
@@ -107,7 +107,9 @@ CREATE TABLE account_sessions (
 CREATE TABLE media_files (
     id            INTEGER PRIMARY KEY,
     item_id       INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-    kind          TEXT NOT NULL CHECK (kind IN ('audio','video','document')),
+    -- 'archive': kept for the record (Library Rip's logs, cue sheets…),
+    -- never returned by the Player API (docs/rip.md).
+    kind          TEXT NOT NULL CHECK (kind IN ('audio','video','document','archive')),
     title         TEXT NOT NULL,
     disc          INTEGER NOT NULL DEFAULT 1,
     track         INTEGER,                    -- NULL for films/documents
@@ -117,7 +119,8 @@ CREATE TABLE media_files (
     size_bytes    INTEGER NOT NULL,
     duration_ms   INTEGER,                    -- measured in the browser at upload
     position      INTEGER NOT NULL DEFAULT 0,
-    created_at    INTEGER NOT NULL
+    created_at    INTEGER NOT NULL,
+    sha256        TEXT                        -- hex, worked out while uploading
 ) STRICT;
 CREATE INDEX media_files_item ON media_files (item_id, disc, track, position);
 
@@ -153,6 +156,8 @@ CREATE TABLE favourites (
 ) STRICT, WITHOUT ROWID;
 ```
 
+Schema v2 also holds `api_keys` for Library Rip (see `docs/rip.md`).
+
 Media files live in `<data_dir>/media/` with random names plus the original
 extension. Deleting an item, media file or subtitle deletes its files.
 (The migration also adds plain indexes on the foreign-key columns
@@ -173,6 +178,7 @@ type Account = { id: number; username: string; email: string; access: Access };
 // The answer to registering (202). `message` is plain English for the screen.
 type RegistrationPending = { status: "pending"; message: string };
 
+// Files of the server's "archive" kind are never sent to the Player.
 type MediaKind = "audio" | "video" | "document";
 type Subtitle = { id: number; language: string; label: string; url: string }; // url = /api/subtitles/{id}
 type MediaFile = {
@@ -212,6 +218,7 @@ type Playlist = PlaylistSummary & { entries: MediaFile[] };
 | `POST /api/account/login` | none | `{login,password}` (username or email) → 200 `Account` + cookie; 401 wrong; 403 `{"error":"Your account is waiting for a librarian to approve it."}` when the password is right but the account isn't approved yet (no cookie); 429 rate-limited |
 | `POST /api/account/logout` | any | → 204, clears cookie |
 | `GET /api/account/me` | account | → `Account` (401 if none) |
+| `GET /api/info` | none | → `{name, version, sourceUrl}`: the library's title, the server version and where its source code is (the AGPL's offer; show it on the about screen) |
 | `GET /api/items?q=&kind=&type=&offset=&limit=` | account | → `{items: ItemSummary[], total: number}`; only items with ≥1 media file the viewer may access; `q` is a plain substring match on title/creator; newest first by default (the item whose latest file was uploaded most recently), `sort=title` alphabetical; `limit` defaults to 50, at most 200 |
 | `GET /api/items/{id}` | account | → `ItemDetail` (404 if it has no files the viewer may access) |
 | `GET /api/media/{id}` | account | → `MediaFile` |
@@ -230,6 +237,10 @@ type Playlist = PlaylistSummary & { entries: MediaFile[] };
 | `DELETE /api/favourites/{mediaId}` | account | → 204 |
 
 Non-owners get 403 on owner endpoints for playlists they can see.
+Archive files (`kind = 'archive'`, uploaded by Library Rip) are left out of
+every response above, don't count towards `fileCount`, `kinds` or
+`totalDurationMs`, and answer 404 when asked for directly; `kind=archive`
+is a 400. An item with only archive files is not listed.
 Any other `/api/…` path answers 404 with the JSON error shape. Login failures
 are 401 `{"error": "That username or password isn't right."}`; after 10
 wrong passwords for one login name (or 100 overall) in 10 minutes, 429.

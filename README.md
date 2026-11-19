@@ -21,6 +21,8 @@ hyper, maud templates, htmx 4) with everything in a single SQLite file.
   PDFs) play in an installable web app at `/player/`, with simple accounts
   (each approved by the librarian), playlists, favourites and offline
   downloads. See [The Player](#the-player).
+- **Library Rip**: a small desktop app that copies CDs into the library with
+  checked, archival-quality rips. See [Library Rip](#library-rip).
 
 ## Running it
 
@@ -281,6 +283,63 @@ default).
 - Streams support byte ranges, so seeking works through the proxy; they are
   never compressed by the library.
 
+## Library Rip
+
+Library Rip (in `rip/`, its own Cargo package) is a desktop app that turns
+a CD into an exact, verified copy (FLAC per track, checked against
+AccurateRip and CTDB, with a cue sheet and a rip log) and uploads it to an
+entry in the library. The contract between it and the server is
+`docs/rip.md`; how to build it is in `rip/README.md`.
+
+- **Get it**: `/ripper` ("Get Library Rip", linked from the Librarian's desk
+  and the upload studio) lists the builds you copy into
+  `<data_dir>/downloads/library-rip/` (or `[ripper] downloads_dir`), with each
+  file's size and SHA-256, and explains how to install MakeMKV for films.
+- **Connect it**: in Library Rip, type the library's address and press
+  Connect. Your browser opens `/connect`; unlock as the librarian and say
+  **Yes, connect**. If the browser is on another device, Library Rip shows a
+  code like `WXYZ-1234` to type on `/connect/device`. Either way the app
+  gets its own API key (only its SHA-256 is stored).
+- **Disconnect it**: the desk lists **Connected rippers** (name, when
+  connected, when last used) with **Disconnect**; the app can also
+  disconnect itself. A disconnected key stops working at once.
+- **What it uploads**: each track as music (playable in the Player), and the
+  rip log, cue sheet and `rip.json` as **archive files**: kept for the
+  record, listed under "Archive files" on the item page for the librarian to
+  download, and never shown in the Player. Every upload's SHA-256 is checked
+  as it arrives and stored.
+- An API key only opens `/api/rip/…`: never the Player's API or the desk.
+  Because Library Rip sends its key in the `Authorization` header, your
+  reverse proxy's basic auth must leave `/api/rip/*` alone (as
+  `deploy/Caddyfile` does); `site_password` already does.
+
+### Trying Library Rip locally
+
+```sh
+# Terminal 1: the dev library on http://127.0.0.1:8090 (admin password "librarian")
+cargo run -- --config library.dev.toml serve
+
+# Terminal 2: the ripper's window; connect to http://127.0.0.1:8090
+cd rip && cargo run
+```
+
+No drive? Make a simulated disc and serve stand-in MusicBrainz, AccurateRip
+and CTDB answers for it, then rip it with or without the window:
+
+```sh
+cd rip
+cargo run -- make-fake-disc /tmp/disc --tracks 3 --seconds 20 --error 500:jitter
+cargo run -- mock-services /tmp/disc --listen 127.0.0.1:8092   # prints export lines
+# in another terminal, after pasting those export lines:
+cargo run -- --fake-disc /tmp/disc                              # the window
+cargo run -- headless --library http://127.0.0.1:8090 --fake-disc /tmp/disc --device-code
+```
+
+With a real drive, `cargo run` in `rip/` lists it on the **Disc** screen
+(libcdio-paranoia; system packages in `rip/README.md`). `cargo test` in
+`rip/` includes `tests/e2e_headless.rs`, which builds and starts this server
+with a temporary data folder and rips a simulated disc into it end to end.
+
 ## Maintenance
 
 ```sh
@@ -309,7 +368,8 @@ tracks), `src/dupes.rs`, `src/media.rs`
 (photos, barcodes), `src/digital.rs` (upload rules, subtitles), `src/views`
 (maud), `src/web` (handlers, auth, middleware, the Player's JSON API in
 `api.rs`/`accounts.rs`/`stream.rs`, the upload studio in `studio.rs` and
-its MusicBrainz panel in `fill.rs`),
+its MusicBrainz panel in `fill.rs`, Library Rip's API in `rip.rs` and its
+connect and download pages in `connect.rs`),
 `static/` (CSS, htmx, small progressive-enhancement JS, fonts), `player/`
 (the Player PWA). The contract between the server and the Player is
 `docs/player.md`.
@@ -318,3 +378,29 @@ The design reference (the Broadsheet canvas) is in `design-canvas/`.
 
 Fonts: Fraunces, Instrument Sans and IBM Plex Mono (SIL Open Font
 License), self-hosted. htmx 4.0.2 (BSD Zero Clause) is vendored.
+
+`cargo deny check licenses` checks that every Rust dependency's licence can
+be combined with the AGPL (the allowed list is in `deny.toml`).
+
+## Licence
+
+The Library, the Player and Library Rip are free software under the
+[GNU Affero General Public License, version 3 or later](LICENSE)
+(AGPL-3.0-or-later). You may use, study, share and change them; if you share
+them, changed or not, you share them under the same licence with their
+source code.
+
+What the AGPL adds to the ordinary GPL is its network clause (section 13):
+if you run a **changed** copy of the library on a server that other people
+use over a network, you must offer those people the source code of your
+changed version. For self-hosters that means:
+
+- Running it unchanged for your household or friends asks nothing of you:
+  every page's footer, the Player's about screen and Library Rip already
+  link to the source code (`source_url`, by default
+  https://github.com/OceanEilonwy/library).
+- If you change the code and let others use it, publish your changes
+  somewhere they can get them (a public Git repository is enough) and set
+  `source_url` in `library.toml` (or `LIBRARY_SOURCE_URL`) to point there.
+- Your catalogue, photos and media are yours: the licence covers the
+  program, not what you keep in it.

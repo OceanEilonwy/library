@@ -629,8 +629,11 @@ mod tests {
             .arg(&output)
             .output()
             .unwrap();
+        // metaflac ends lines with \r\n on Windows.
         assert_eq!(
-            String::from_utf8(streaminfo.stdout).unwrap(),
+            String::from_utf8(streaminfo.stdout)
+                .unwrap()
+                .replace("\r\n", "\n"),
             "88200\n44100\n"
         );
     }

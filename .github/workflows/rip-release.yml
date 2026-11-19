@@ -116,14 +116,23 @@ jobs:
           DESKTOP
           desktop-file-validate library-rip.desktop
           cp rip/ui/icons/library-rip-256.png library-rip.png
-          # D-Bus (for the keyring) is on every Linux desktop; bundling it
-          # would also bundle libsystemd and libgcrypt.
+          # D-Bus (for the keyring) is on every Linux desktop. linuxdeploy
+          # skips an excluded library but still bundles what it links, so
+          # D-Bus's own dependencies (libsystemd and its chain) are
+          # excluded too; they come with the system's D-Bus.
           ./linuxdeploy \
             --appdir AppDir \
             --executable rip/target/release/library-rip \
             --desktop-file library-rip.desktop \
             --icon-file library-rip.png \
-            --exclude-library 'libdbus-1.so*'
+            --exclude-library 'libdbus-1.so*' \
+            --exclude-library 'libsystemd.so*' \
+            --exclude-library 'libcap.so*' \
+            --exclude-library 'libgcrypt.so*' \
+            --exclude-library 'libgpg-error.so*' \
+            --exclude-library 'liblz4.so*' \
+            --exclude-library 'liblzma.so*' \
+            --exclude-library 'libzstd.so*'
           # The source of the libraries just bundled (GPL/LGPL), from
           # Ubuntu's source packages.
           codename=$(lsb_release -cs)

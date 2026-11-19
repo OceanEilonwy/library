@@ -37,7 +37,7 @@ short_desc="Home library catalogue with meaning-based search"
 maintainer="monokulo-nodo <noreply@localhost>"
 # Nothing is installed under /usr/share/licenses because a feed package may only write inside its
 # own directory.
-license="MIT"
+license="AGPL-3.0-or-later"
 homepage="https://github.com/OceanEilonwy/library"
 
 _dist=https://static.rust-lang.org/dist/${_nightly}

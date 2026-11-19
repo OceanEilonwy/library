@@ -6,6 +6,7 @@ use super::{Ctx, Header, date_long, date_short, decade_label, page, urlencode};
 use crate::db::items::{Item, Summary};
 use crate::db::loans::Loan;
 use crate::db::locations::Location;
+use crate::db::media_files::MediaFile;
 use crate::db::photos::Photo;
 use crate::db::types::{FieldDef, FieldKind};
 use crate::search::{Availability, Hit, Results, Sort};
@@ -460,6 +461,8 @@ pub struct ItemView<'a> {
     pub photos: &'a [Photo],
     pub loans: &'a [Loan],
     pub similar: &'a [Summary],
+    /// Digital copies (only filled in for the librarian).
+    pub media: &'a [MediaFile],
 }
 
 pub fn item_page(ctx: &Ctx, v: &ItemView, flash: Option<&str>) -> Markup {
@@ -468,7 +471,10 @@ pub fn item_page(ctx: &Ctx, v: &ItemView, flash: Option<&str>) -> Markup {
         @if let Some(f) = flash { p.flash role="status" { (f) } }
         article.item-page {
             div.main {
-                span.kicker.accent { (it.type_name) }
+                span.kicker.accent {
+                    (it.type_name)
+                    @if ctx.admin && it.restricted { " " span.badge-restricted { "Adults only" } }
+                }
                 h1 { (it.title) }
                 @if !it.creator.is_empty() { span.creator { (it.creator) } }
                 dl.facts {
@@ -536,6 +542,28 @@ pub fn item_page(ctx: &Ctx, v: &ItemView, flash: Option<&str>) -> Markup {
             }
             div.side {
                 (loan_panel(it.id, &it.title, v.loans, None))
+                @if ctx.admin {
+                    section.panel #digital aria-labelledby="digital-title" {
+                        h2 #digital-title { "Digital copy" }
+                        @if v.media.is_empty() {
+                            p.small.muted { "No files yet. Add the tracks of a CD, a film or a PDF so it can be played in the Player." }
+                        } @else {
+                            ol.digital-files {
+                                @for m in v.media.iter().take(12) {
+                                    li {
+                                        span.mono.small {
+                                            @if let Some(t) = m.track { (format!("{t:02}")) } @else { (m.kind.label()) }
+                                        }
+                                        " " (m.title)
+                                    }
+                                }
+                            }
+                            @if v.media.len() > 12 { p.small.muted { "and " (v.media.len() - 12) " more" } }
+                        }
+                        @if it.restricted { p.small.muted { "Restricted: only adult accounts can play these." } }
+                        a.btn href={ "/admin/items/" (it.id) "/media" } { "Add or manage files" }
+                    }
+                }
                 @if ctx.admin {
                     section.panel aria-labelledby="admin-title" {
                         h2 #admin-title { "Librarian" }

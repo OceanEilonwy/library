@@ -14,8 +14,12 @@ hyper, maud templates, htmx 4) with everything in a single SQLite file.
   Books, MusicBrainz, TMDb, a barcode database), scan a barcode with the
   phone camera, add photos, add your own fields per type, and get a gentle
   warning about possible duplicates (never a hard block).
-- **No accounts**: the site is public behind your reverse proxy's basic
-  auth; editing needs the admin password, remembered for the browser session.
+- **No accounts for the catalogue**: the site is public behind your reverse
+  proxy's basic auth; editing needs the admin password, remembered for the
+  browser session.
+- **The Player**: digital copies of your CDs, DVDs and books (music, films,
+  PDFs) play in an installable web app at `/player/`, with simple accounts,
+  playlists, favourites and offline downloads. See [The Player](#the-player).
 
 ## Running it
 
@@ -113,6 +117,142 @@ Drop image files (SVG, PNG, WebP or JPG) into the art directory
 | `margin-left.*`, `margin-right.*` | either side of the big search line (wide screens) |
 | `empty.*` | when a search finds nothing |
 
+## The Player
+
+The Player is a separate web app (a PWA, built with Solid and Vite) that the
+library serves at `/player/`. It plays the digital copies you upload:
+albums with a queue, back/forward 10 s and lock-screen controls, films with
+subtitles, and PDFs. Tracks, albums and playlists can be downloaded to the
+device for offline listening, and it installs like an app on phones and
+desktops. A **▶ Player** button on every page of the catalogue opens it.
+
+### Building it
+
+You need Node.js 20 or newer. Build the Player before the server, because
+release builds embed it:
+
+```sh
+npm --prefix player ci && npm --prefix player run build   # → player/dist
+cargo build --release
+```
+
+Until it is built, `/player/` shows a page saying how. (Debug builds read
+`player/dist` from disk, so a rebuilt Player shows up without rebuilding the
+server.) For working on the Player itself, `npm --prefix player run dev`
+serves it on port 5173 and passes `/api`, `/photos` and `/static` to the
+library on port 8080 (`LIBRARY_BACKEND` changes that).
+
+### Trying it locally
+
+`library.dev.toml` is a development config that keeps everything in
+`./data-dev` (gitignored), listens on **127.0.0.1:8090** (so it can run
+beside a real library on 8080), has meaning search and online lookups
+switched off, and uses the admin password **librarian**.
+`scripts/dev-seed.py` fills it with demo data. From the repository root:
+
+```sh
+npm --prefix player ci && npm --prefix player run build   # the Player → player/dist
+scripts/dev-seed.py          # wipes ./data-dev, then seeds it (needs Python 3.11+;
+                             # uses ffmpeg for the sample files when installed)
+cargo run -- --config library.dev.toml serve
+```
+
+Then open:
+
+- <http://127.0.0.1:8090/player/>: the Player. Sign in as **adult** /
+  **password123** (sees everything) or **kid** / **password123** (a child
+  account), or make a new account.
+- <http://127.0.0.1:8090/>: the catalogue. **Unlock** with **librarian** for
+  the Librarian's desk, the upload studio (an item's **Add or manage files**)
+  and **Player accounts**.
+
+The seed makes, through the real upload endpoint: "Sine Songs" (three tones,
+FLAC/MP3/Opus), "Late Night Tones" (marked Restricted, so only adults see
+it), "Test Pattern" (a short film with English and French subtitles) and
+"A Tiny Book" (a PDF), plus playlists that mix in restricted tracks
+("Saturday mix"), are only restricted tracks ("After hours", hidden from
+kid) or belong to kid ("Kid's picks"). Run it again any time to start
+fresh; it refuses to run while something is listening on the config's port,
+and refuses to wipe a folder called `data`.
+
+To work on the Player with hot reloading, keep the server running and run
+`LIBRARY_BACKEND=http://127.0.0.1:8090 npm --prefix player run dev`, then
+open <http://localhost:5173/player/>.
+
+### Tests
+
+```sh
+cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+cd player
+npm run typecheck && npm test        # Vitest unit and component tests
+npm run build && npm run test:e2e    # Playwright, against the real server
+```
+
+The end-to-end tests need Chromium once (`npx playwright install chromium`),
+Python 3 and, for the film, ffmpeg. They seed a throwaway data folder with
+`scripts/dev-seed.py`, start the server on port 18431 (`E2E_PORT` changes
+it), and stop it and delete the folder afterwards (`E2E_KEEP=1` keeps it, with
+the server log). `LIBRARY_BIN` points them at a server binary instead of
+`cargo build`.
+
+### Accounts
+
+Digital copies need an account; the catalogue doesn't. People make one in
+the Player (username, email, password). New accounts are **child**
+accounts: they never see an item marked **Restricted (adults only)**, not
+even in someone else's playlist. The librarian promotes people to
+**adult** on the Librarian's desk under **Player accounts** (`/admin/accounts`),
+where accounts can also be deleted. From the server:
+
+```sh
+library --config /etc/library/library.toml create-account alice alice@example.org --adult
+library --config /etc/library/library.toml set-access alice child
+```
+
+`create-account` asks for the password (or reads `LIBRARY_ACCOUNT_PASSWORD`).
+In `library.toml`, `[accounts] default_access = "adult"` makes new accounts
+adults, and `open_registration = false` stops people making accounts in the
+Player.
+
+Playlists are visible to every account, but each person only sees the
+entries they're allowed to play; a playlist with nothing left to show is
+hidden (except from the person who made it). Listening history stays on each
+device.
+
+### Adding digital copies
+
+Unlock editing, open an item and choose **Add or manage files** under
+**Digital copy** (or go to `/admin/items/{id}/media`). Drag in the folder
+you ripped a CD or DVD into, or pick files or a folder. Before anything is
+sent, the studio reads disc and track numbers and titles from the file
+names (`01 - Title.flac`, `1-03 Title.mp3`, `CD2/04. Title.m4a`), measures
+each file's length and pairs subtitle files with their film
+(`Film.en.srt` becomes English subtitles for `Film.mp4`). Fix anything that
+looks wrong, reorder by dragging, then **Upload all**: each file gets its own
+progress bar and can be retried. Files already uploaded can be renamed,
+renumbered, reordered and deleted, and subtitles added or removed.
+
+Accepted: music (MP3, M4A, AAC, FLAC, Ogg, Opus, WAV, WebM), films (MP4,
+M4V, WebM, MKV, MOV), documents (PDF, EPUB) and subtitles (SRT, converted to
+WebVTT, or VTT). Nothing else is converted: files are stored and streamed
+exactly as uploaded, so use formats your browsers play (MP3/AAC/FLAC/Opus,
+H.264 MP4). Tick **Restricted (adults only)** on an item's edit form to keep
+its files from child accounts.
+
+Files live in `<data_dir>/media`; back it up with the rest of the data
+directory. The largest single upload is `[media] max_upload_mb` (20000 MB by
+default).
+
+### Deploying
+
+- Your reverse proxy must let big uploads through: in Caddy,
+  `request_body { max_size 20GB }` (as in `deploy/Caddyfile`); in nginx,
+  `client_max_body_size 20g;` and consider `proxy_request_buffering off;`.
+- Basic auth in front of the whole site works for the Player too: browsers
+  send the same credentials for the app, its service worker and streams.
+- Streams support byte ranges, so seeking works through the proxy; they are
+  never compressed by the library.
+
 ## Maintenance
 
 ```sh
@@ -120,7 +260,7 @@ library --config /etc/library/library.toml backup /path/to/library-2026-11-18.sq
 library --config /etc/library/library.toml reindex   # rebuild search indexes
 ```
 
-Back up the data directory (`library.sqlite3`, `photos/`, `session.key`);
+Back up the data directory (`library.sqlite3`, `photos/`, `media/`, `session.key`);
 the backup command writes a consistent copy of the database even while the
 server runs. `models/` can be re-downloaded.
 
@@ -132,11 +272,16 @@ LIBRARY_TEST_MODEL_DIR=data/models/BAAI--bge-small-en-v1.5 cargo test --release 
 cargo clippy --all-targets
 ```
 
-Layout: `src/db` (schema, items, locations, loans, photos), `src/search`
+Layout: `src/db` (schema, items, locations, loans, photos, accounts, media
+files, playlists, favourites), `src/search`
 (query parser, SQL compiler, hybrid ranking), `src/embed` (candle BERT and
 the background indexer), `src/lookup.rs`, `src/dupes.rs`, `src/media.rs`
-(photos, barcodes), `src/views` (maud), `src/web` (handlers, auth,
-middleware), `static/` (CSS, htmx, small progressive-enhancement JS, fonts).
+(photos, barcodes), `src/digital.rs` (upload rules, subtitles), `src/views`
+(maud), `src/web` (handlers, auth, middleware, the Player's JSON API in
+`api.rs`/`accounts.rs`/`stream.rs`, the upload studio in `studio.rs`),
+`static/` (CSS, htmx, small progressive-enhancement JS, fonts), `player/`
+(the Player PWA). The contract between the server and the Player is
+`docs/player.md`.
 
 The design reference (the Broadsheet canvas) is in `design-canvas/`.
 

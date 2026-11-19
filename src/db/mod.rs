@@ -1,10 +1,14 @@
 //! SQLite access: one writer connection, a small pool of readers (WAL mode
 //! lets them run alongside the writer), all used from blocking threads.
 
+pub mod accounts;
+pub mod favourites;
 pub mod items;
 pub mod loans;
 pub mod locations;
+pub mod media_files;
 pub mod photos;
+pub mod playlists;
 pub mod settings;
 pub mod types;
 
@@ -15,6 +19,7 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags};
 
 const SCHEMA_V1: &str = include_str!("schema.sql");
+const SCHEMA_V2: &str = include_str!("schema_v2.sql");
 const READER_POOL_MAX: usize = 8;
 
 /// Registers sqlite-vec with every connection opened afterwards.
@@ -157,6 +162,13 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         tx.commit()?;
         tracing::info!("database schema created");
     }
+    if version < 2 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(SCHEMA_V2).context("applying schema v2")?;
+        tx.pragma_update(None, "user_version", 2)?;
+        tx.commit()?;
+        tracing::info!("database schema upgraded to version 2 (accounts and digital copies)");
+    }
     Ok(())
 }
 
@@ -249,7 +261,50 @@ mod tests {
         let v: i64 = db
             .read_blocking(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
             .unwrap();
-        assert_eq!(v, 1);
+        assert_eq!(v, 2);
+    }
+
+    #[test]
+    fn version_1_database_upgrades_and_keeps_its_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.sqlite3");
+        {
+            // A database as version 1 left it, with an item in it.
+            register_vec_extension();
+            let mut c = open_connection(&path, false).unwrap();
+            let tx = c.transaction().unwrap();
+            tx.execute_batch(SCHEMA_V1).unwrap();
+            tx.pragma_update(None, "user_version", 1).unwrap();
+            tx.execute(
+                "INSERT INTO items (type_id, title, created_at, updated_at) VALUES (1, 'Blue', 1, 1)",
+                [],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let (v, restricted, tables): (i64, i64, i64) = db
+            .read_blocking(|c| {
+                Ok((
+                    c.query_row("PRAGMA user_version", [], |r| r.get(0))?,
+                    c.query_row(
+                        "SELECT restricted FROM items WHERE title = 'Blue'",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                    c.query_row(
+                        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN
+                         ('accounts', 'account_sessions', 'media_files', 'subtitles',
+                          'playlists', 'playlist_entries', 'favourites')",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(v, 2);
+        assert_eq!(restricted, 0, "existing items are not restricted");
+        assert_eq!(tables, 7);
     }
 
     #[test]

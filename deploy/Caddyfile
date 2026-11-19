@@ -5,9 +5,10 @@ library.example.org {
 	basic_auth {
 		family $2a$14$REPLACE_WITH_OUTPUT_OF_caddy_hash-password
 	}
-	# Photos can be large.
+	# Photos can be large, and digital copies (films, whole albums) much
+	# larger: keep this at least as big as [media] max_upload_mb.
 	request_body {
-		max_size 100MB
+		max_size 20GB
 	}
 	reverse_proxy 127.0.0.1:8080
 }

@@ -4,7 +4,8 @@
 # (see deploy/Caddyfile).
 listen = "127.0.0.1:8080"
 
-# Database, photos, model files and the session key live here.
+# Database, photos, digital copies (in media/), model files and the session
+# key live here.
 data_dir = "/var/lib/library"
 
 # Shown until you change it on the Librarian's desk (/admin).
@@ -34,3 +35,17 @@ enabled = true
 # Film lookups need a free TMDb "API Read Access Token".
 # tmdb_token = ""
 timeout_secs = 15
+
+[accounts]
+# Accounts for the Player (/player/). New accounts start as "child", which
+# never sees items marked "Restricted (adults only)"; promote them on the
+# Librarian's desk under Accounts, or make them "adult" from the start here.
+default_access = "child"
+# Let anyone who can reach the site make an account from the Player. Turn it
+# off and use `library create-account` instead if you prefer.
+open_registration = true
+
+[media]
+# Largest single file the upload studio accepts, in megabytes. Remember to
+# let big uploads through your reverse proxy too (see deploy/Caddyfile).
+max_upload_mb = 20000

@@ -2,6 +2,7 @@
 
 mod config;
 mod db;
+mod digital;
 mod dupes;
 mod embed;
 mod lookup;
@@ -60,6 +61,17 @@ enum Command {
     Backup { dest: PathBuf },
     /// Download the embedding model now (instead of on first start).
     FetchModel,
+    /// Make a Player account (prompts for its password, or reads
+    /// LIBRARY_ACCOUNT_PASSWORD).
+    CreateAccount {
+        username: String,
+        email: String,
+        /// Let the account see items marked restricted (adults only).
+        #[arg(long)]
+        adult: bool,
+    },
+    /// Change a Player account's access: child or adult.
+    SetAccess { username: String, access: String },
 }
 
 fn main() -> Result<()> {
@@ -98,6 +110,18 @@ fn main() -> Result<()> {
             db.read_blocking(|c| db::backup(c, &dest))?;
             println!("Backed up to {}", dest.display());
             Ok(())
+        }
+        Command::CreateAccount {
+            username,
+            email,
+            adult,
+        } => {
+            let cfg = Config::load(&cli.config)?;
+            create_account(&cfg, &username, &email, adult)
+        }
+        Command::SetAccess { username, access } => {
+            let cfg = Config::load(&cli.config)?;
+            set_access(&cfg, &username, &access)
         }
         Command::FetchModel => {
             let cfg = Config::load(&cli.config)?;
@@ -145,6 +169,49 @@ fn hash_password(stdin: bool) -> Result<()> {
     Ok(())
 }
 
+fn create_account(cfg: &Config, username: &str, email: &str, adult: bool) -> Result<()> {
+    use db::accounts::{self, Access};
+    let password = match std::env::var("LIBRARY_ACCOUNT_PASSWORD") {
+        Ok(p) if !p.is_empty() => p,
+        _ => {
+            let pw = rpassword::prompt_password(format!("Password for {username}: "))?;
+            let again = rpassword::prompt_password("Again: ")?;
+            if pw != again {
+                anyhow::bail!("The two passwords differ.");
+            }
+            pw
+        }
+    };
+    let bad = accounts::validate(username, email, &password);
+    if !bad.is_empty() {
+        anyhow::bail!("{bad}");
+    }
+    let hash = web::auth::hash_password(&password)?;
+    let access = if adult { Access::Adult } else { Access::Child };
+    let db = Db::open(&cfg.db_path())?;
+    let account = db.write_blocking(|c| accounts::create(c, username, email, &hash, access))?;
+    println!(
+        "Made the account {} ({}), access: {}.",
+        account.username,
+        account.email,
+        account.access.as_str()
+    );
+    Ok(())
+}
+
+fn set_access(cfg: &Config, username: &str, access: &str) -> Result<()> {
+    use db::accounts::{self, Access};
+    let access =
+        Access::parse(access).ok_or_else(|| anyhow::anyhow!("Access should be child or adult."))?;
+    let db = Db::open(&cfg.db_path())?;
+    let account = db
+        .read_blocking(|c| accounts::by_username(c, username))?
+        .ok_or_else(|| anyhow::anyhow!("There is no account called {username}."))?;
+    db.write_blocking(|c| accounts::set_access(c, account.id, access))?;
+    println!("{} now has {} access.", account.username, access.as_str());
+    Ok(())
+}
+
 fn reindex(cfg: Config) -> Result<()> {
     let db = Db::open(&cfg.db_path())?;
     let n = db.write_blocking(|c| {
@@ -176,6 +243,7 @@ async fn serve(cfg: Config) -> Result<()> {
     std::fs::create_dir_all(&cfg.data_dir)
         .with_context(|| format!("creating {}", cfg.data_dir.display()))?;
     std::fs::create_dir_all(cfg.photos_dir())?;
+    std::fs::create_dir_all(cfg.media_dir())?;
     let db = Db::open(&cfg.db_path())?;
     let key = web::auth::Auth::load_or_create_key(&cfg.secret_path())?;
     let password_hash = match (&cfg.admin_password_hash, &cfg.admin_password) {
@@ -233,6 +301,7 @@ async fn serve(cfg: Config) -> Result<()> {
         lookups,
         candidates: Arc::new(lookup::CandidateCache::default()),
         auth: Arc::new(auth),
+        throttles: Arc::new(web::accounts::Throttles::default()),
     };
     let app = web::router(state);
     let listener = tokio::net::TcpListener::bind(cfg.listen)

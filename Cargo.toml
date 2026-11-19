@@ -16,6 +16,7 @@ candle-nn = "0.11"
 candle-transformers = "0.11"
 clap = { version = "4", features = ["derive", "env"] }
 hmac = "0.12"
+httpdate = "1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "service"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
@@ -34,7 +35,8 @@ sha2 = "0.10"
 sqlite-vec = "0.1.6"
 subtle = "2"
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "signal", "time", "sync", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "signal", "time", "sync", "fs", "io-util"] }
+tokio-util = { version = "0.7", features = ["io"] }
 toml = "0.8"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["compression-gzip", "compression-br", "set-header", "trace"] }

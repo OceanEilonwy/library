@@ -7,11 +7,15 @@
 # are then only the run's `library-rip-<version>` artifact.
 #
 # Produces, for the GitHub release (with SHA256SUMS):
-#   library-rip-<version>-linux-x86_64.tar.gz    binary + licences
+#   library-rip-<version>-linux-x86_64.tar.gz    bin/ + the lib/ it needs + licences
 #   library-rip-<version>-linux-x86_64.AppImage  self-contained (linuxdeploy)
 #   library-rip-<version>-windows-x86_64.zip     .exe + the MSYS2 DLLs it needs
 #   library-rip-<version>-macos-arm64.dmg/.zip   app bundle (Apple silicon)
 #   library-rip-<version>-macos-x86_64.dmg/.zip  app bundle (Intel)
+#
+# Each package carries the source of the GPL/LGPL libraries it bundles (and
+# of libFLAC) in a `sources` folder with SOURCES.txt, collected by
+# rip/packaging/collect-sources.sh.
 #
 # Copy the files into the library's `<data_dir>/downloads/library-rip/` so
 # the "Get Library Rip" page offers them.
@@ -92,23 +96,13 @@ jobs:
       - name: Smoke test
         run: rip/target/release/library-rip --version
 
-      - name: tar.gz
-        run: |
-          name="library-rip-$VERSION-linux-x86_64"
-          mkdir -p "dist/$name"
-          cp rip/target/release/library-rip "dist/$name/"
-          cp LICENSE rip/README.md "dist/$name/"
-          cp rip/ui/fonts/*-OFL.txt "dist/$name/"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
-          rm -rf "dist/$name"
-
       - name: AppImage
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
           wget -q -O linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           chmod +x linuxdeploy
-          mkdir -p AppDir/usr/share/licenses/library-rip
+          mkdir -p dist AppDir/usr/share/licenses/library-rip
           cp LICENSE rip/ui/fonts/*-OFL.txt AppDir/usr/share/licenses/library-rip/
           cat > library-rip.desktop <<'DESKTOP'
           [Desktop Entry]
@@ -122,13 +116,41 @@ jobs:
           DESKTOP
           desktop-file-validate library-rip.desktop
           cp rip/ui/icons/library-rip-256.png library-rip.png
-          LDAI_OUTPUT="library-rip-$VERSION-linux-x86_64.AppImage" ./linuxdeploy \
+          # D-Bus (for the keyring) is on every Linux desktop; bundling it
+          # would also bundle libsystemd and libgcrypt.
+          ./linuxdeploy \
             --appdir AppDir \
             --executable rip/target/release/library-rip \
             --desktop-file library-rip.desktop \
             --icon-file library-rip.png \
+            --exclude-library 'libdbus-1.so*'
+          # The source of the libraries just bundled (GPL/LGPL), from
+          # Ubuntu's source packages.
+          codename=$(lsb_release -cs)
+          for suite in "$codename" "$codename-updates" "$codename-security"; do
+            echo "deb-src http://archive.ubuntu.com/ubuntu $suite main universe"
+          done | sudo tee /etc/apt/sources.list.d/library-rip-sources.list
+          sudo apt-get update
+          bash rip/packaging/collect-sources.sh linux AppDir/usr/lib AppDir/usr/share/licenses/library-rip/sources
+          LDAI_OUTPUT="library-rip-$VERSION-linux-x86_64.AppImage" ./linuxdeploy \
+            --appdir AppDir \
             --output appimage
           mv "library-rip-$VERSION-linux-x86_64.AppImage" dist/
+
+      # The same files as the AppImage, unpacked: bin/library-rip finds the
+      # libraries linuxdeploy copied into lib/ through its $ORIGIN/../lib
+      # run path, so it does not need the libFLAC or libcdio versions of
+      # whichever distribution it lands on.
+      - name: tar.gz
+        run: |
+          name="library-rip-$VERSION-linux-x86_64"
+          mkdir -p "dist/$name"
+          cp -a AppDir/usr/bin AppDir/usr/lib "dist/$name/"
+          cp -a AppDir/usr/share/licenses/library-rip "dist/$name/licences"
+          cp LICENSE rip/README.md "dist/$name/"
+          env -u LD_LIBRARY_PATH "dist/$name/bin/library-rip" --version
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          rm -rf "dist/$name"
 
       - uses: actions/upload-artifact@v6
         with:
@@ -192,6 +214,9 @@ jobs:
             | sort -u \
             | xargs -r -I{} cp {} "dist/$name/"
           ls "dist/$name"
+          # The source of the bundled DLLs (GPL/LGPL), from MSYS2's source
+          # packages.
+          bash rip/packaging/collect-sources.sh windows "dist/$name" "dist/$name/sources"
           cp LICENSE rip/README.md "dist/$name/"
           cp rip/ui/fonts/*-OFL.txt "dist/$name/"
           (cd dist && zip -r -9 "$name.zip" "$name")
@@ -299,6 +324,8 @@ jobs:
             fi
           done
           cp LICENSE rip/ui/fonts/*-OFL.txt "$app/Contents/Resources/"
+          # The source of the bundled dylibs (GPL), from Homebrew.
+          bash rip/packaging/collect-sources.sh macos "$app/Contents/Frameworks" "$app/Contents/Resources/sources"
           # Ad-hoc signature: needed on Apple silicon after changing the
           # binary's library paths. Not a Developer ID signature.
           codesign --force --deep --sign - "$app"

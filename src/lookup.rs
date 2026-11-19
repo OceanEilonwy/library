@@ -6,7 +6,7 @@
 //! can be prefilled from a link without re-querying.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -15,7 +15,19 @@ use serde_json::Value;
 
 use crate::config::LookupConfig;
 use crate::db::types::Lookup;
+use crate::musicbrainz;
 use crate::util;
+
+/// MusicBrainz asks for at most one request a second. A different spacing
+/// is only honoured for other servers (a local mirror, or tests).
+fn musicbrainz_interval(cfg: &LookupConfig) -> Duration {
+    let asked = Duration::from_millis(cfg.musicbrainz_interval_ms);
+    if cfg.musicbrainz_url.contains("musicbrainz.org") {
+        asked.max(Duration::from_secs(1))
+    } else {
+        asked
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
@@ -84,6 +96,8 @@ pub struct Outcome {
 pub struct Lookups {
     cfg: LookupConfig,
     client: reqwest::Client,
+    /// MusicBrainz's rate limiter and caches, shared by every clone.
+    musicbrainz: Arc<musicbrainz::Shared>,
 }
 
 impl Lookups {
@@ -103,11 +117,29 @@ impl Lookups {
             .timeout(Duration::from_secs(cfg.timeout_secs.max(1)))
             .connect_timeout(Duration::from_secs(5))
             .build()?;
-        Ok(Self { cfg, client })
+        let musicbrainz = Arc::new(musicbrainz::Shared::new(musicbrainz_interval(&cfg)));
+        Ok(Self {
+            cfg,
+            client,
+            musicbrainz,
+        })
     }
 
     pub fn client(&self) -> &reqwest::Client {
         &self.client
+    }
+
+    pub fn config(&self) -> &LookupConfig {
+        &self.cfg
+    }
+
+    /// Whether online lookups are switched on.
+    pub fn enabled(&self) -> bool {
+        self.cfg.enabled
+    }
+
+    pub(crate) fn musicbrainz_state(&self) -> &musicbrainz::Shared {
+        &self.musicbrainz
     }
 
     /// Searches the sources suited to `kind` (or all sources for `None`).
@@ -258,7 +290,7 @@ impl Lookups {
             None => query.to_owned(),
         };
         let json = self
-            .get_json(self.client.get(url).query(&[
+            .musicbrainz_json(self.client.get(url).query(&[
                 ("query", q.as_str()),
                 ("fmt", "json"),
                 ("limit", "8"),
@@ -487,24 +519,7 @@ pub fn parse_musicbrainz(json: &Value) -> Vec<Candidate> {
         .iter()
         .filter(|r| !s(r, "title").is_empty())
         .map(|r| {
-            let artist = r
-                .get("artist-credit")
-                .and_then(Value::as_array)
-                .map(|credits| {
-                    credits
-                        .iter()
-                        .map(|c| {
-                            let name = s(c, "name");
-                            let name = if name.is_empty() {
-                                c.get("artist").map(|a| s(a, "name")).unwrap_or_default()
-                            } else {
-                                name
-                            };
-                            name + c.get("joinphrase").and_then(Value::as_str).unwrap_or("")
-                        })
-                        .collect::<String>()
-                })
-                .unwrap_or_default();
+            let artist = musicbrainz::artist_credit(r);
             let label = r
                 .get("label-info")
                 .and_then(Value::as_array)
@@ -533,7 +548,7 @@ pub fn parse_musicbrainz(json: &Value) -> Vec<Candidate> {
                 source: None,
                 work: None,
                 title: s(r, "title"),
-                creator: artist.trim().to_owned(),
+                creator: artist,
                 year: year_of(&s(r, "date")),
                 publisher: label,
                 format,

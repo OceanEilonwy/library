@@ -52,6 +52,8 @@ pub struct ItemInput {
     pub tags: String,
     pub notes: String,
     pub location: String,
+    /// Only adult accounts may play this item's digital copies.
+    pub restricted: bool,
     /// Raw values for user-defined fields, by field id.
     pub fields: Vec<(i64, String)>,
 }
@@ -76,6 +78,7 @@ pub struct Item {
     pub location_path: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub restricted: bool,
 }
 
 impl Item {
@@ -99,6 +102,7 @@ impl Item {
             location_path: r.get(15)?,
             created_at: r.get(16)?,
             updated_at: r.get(17)?,
+            restricted: r.get(18)?,
         })
     }
 
@@ -116,6 +120,7 @@ impl Item {
             tags: self.tags.clone(),
             notes: self.notes.clone(),
             location: self.location_path.clone().unwrap_or_default(),
+            restricted: self.restricted,
             fields: fields.iter().map(|(d, v)| (d.id, v.clone())).collect(),
         }
     }
@@ -124,7 +129,7 @@ impl Item {
 const ITEM_SELECT: &str =
     "SELECT i.id, i.type_id, t.name, t.slug, t.creator_label, i.title, i.creator, i.year,
         i.publisher, i.format, i.identifier, i.description, i.tags, i.notes, i.location_id,
-        l.path, i.created_at, i.updated_at
+        l.path, i.created_at, i.updated_at, i.restricted
     FROM items i JOIN media_types t ON t.id = i.type_id
     LEFT JOIN locations l ON l.id = i.location_id";
 
@@ -222,8 +227,9 @@ pub fn create(conn: &mut Connection, input: &ItemInput) -> Result<i64> {
     let ts = now();
     tx.execute(
         "INSERT INTO items (type_id, title, creator, year, publisher, format, identifier,
-                            description, tags, notes, location_id, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+                            description, tags, notes, location_id, created_at, updated_at,
+                            restricted)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13)",
         params![
             input.type_id,
             v.title,
@@ -236,7 +242,8 @@ pub fn create(conn: &mut Connection, input: &ItemInput) -> Result<i64> {
             v.tags,
             v.notes,
             location,
-            ts
+            ts,
+            input.restricted
         ],
     )?;
     let id = tx.last_insert_rowid();
@@ -253,7 +260,7 @@ pub fn update(conn: &mut Connection, id: i64, input: &ItemInput) -> Result<()> {
     let changed = tx.execute(
         "UPDATE items SET type_id = ?2, title = ?3, creator = ?4, year = ?5, publisher = ?6,
                 format = ?7, identifier = ?8, description = ?9, tags = ?10, notes = ?11,
-                location_id = ?12, updated_at = ?13, embed_hash = NULL
+                location_id = ?12, updated_at = ?13, embed_hash = NULL, restricted = ?14
          WHERE id = ?1",
         params![
             id,
@@ -268,7 +275,8 @@ pub fn update(conn: &mut Connection, id: i64, input: &ItemInput) -> Result<()> {
             v.tags,
             v.notes,
             location,
-            now()
+            now(),
+            input.restricted
         ],
     )?;
     if changed == 0 {
@@ -326,6 +334,34 @@ pub fn delete(conn: &mut Connection, id: i64) -> Result<Vec<String>> {
     tx.execute("DELETE FROM items WHERE id = ?1", [id])?;
     tx.commit()?;
     Ok(files)
+}
+
+/// Sets an item's creator and year only where they are empty (the upload
+/// studio's "Fill from MusicBrainz"). Returns the item afterwards, or
+/// `None` if there is no such item.
+pub fn fill_empty(
+    conn: &mut Connection,
+    id: i64,
+    creator: &str,
+    year: Option<i64>,
+) -> Result<Option<Item>> {
+    let tx = conn.transaction()?;
+    let creator = crate::util::clean(creator, 300);
+    let year = year.filter(|y| (1000..=3000).contains(y));
+    let changed = tx.execute(
+        "UPDATE items SET
+            creator = CASE WHEN creator = '' THEN ?2 ELSE creator END,
+            year = coalesce(year, ?3),
+            updated_at = ?4, embed_hash = NULL
+         WHERE id = ?1 AND ((creator = '' AND ?2 <> '') OR (year IS NULL AND ?3 IS NOT NULL))",
+        params![id, creator, year, now()],
+    )?;
+    if changed > 0 {
+        sync_fts(&tx, id)?;
+    }
+    let item = get(&tx, id)?;
+    tx.commit()?;
+    Ok(item)
 }
 
 pub fn get(conn: &Connection, id: i64) -> Result<Option<Item>> {
@@ -483,6 +519,7 @@ pub(crate) mod tests {
                 Some("Lounge › Bookcase 1 › Shelf 4")
             );
             assert_eq!(item.creator_label, "Author");
+            assert!(!item.restricted);
 
             let hits: i64 = c.query_row(
                 "SELECT count(*) FROM items_fts WHERE items_fts MATCH 'dragons'",
@@ -493,7 +530,10 @@ pub(crate) mod tests {
 
             inp.title = "The Hobbit (illustrated)".into();
             inp.tags = "fantasy".into();
+            inp.restricted = true;
             update(c, id, &inp)?;
+            assert!(get(c, id)?.unwrap().restricted, "restricted is saved");
+            assert!(get(c, id)?.unwrap().to_input(&[]).restricted);
             let hits: i64 = c.query_row(
                 "SELECT count(*) FROM items_fts WHERE items_fts MATCH 'dragons'",
                 [],

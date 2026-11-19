@@ -3,9 +3,13 @@
 
 use maud::{Markup, html};
 
-use super::{Ctx, Header, page, urlencode};
-use crate::db::items::{Invalid, ItemInput};
+use std::collections::HashMap;
+
+use super::{Ctx, Header, date_long, page, urlencode};
+use crate::db::accounts::{Access, Account};
+use crate::db::items::{Invalid, Item, ItemInput};
 use crate::db::locations::Location;
+use crate::db::media_files::{MediaFile, MediaKind, Subtitle};
 use crate::db::types::{FieldDef, FieldKind, Lookup, MediaType};
 use crate::dupes::Possible;
 use crate::lookup::Candidate;
@@ -226,6 +230,14 @@ fn details_form(ctx: &Ctx, v: &FormView) -> Markup {
                     label for="f-tags" { "Tags" }
                     input #f-tags.u-input name="tags" value=(i.tags) maxlength="500" placeholder="classic, romance";
                 }
+                div.field {
+                    span.label { "Digital copies" }
+                    label.checks {
+                        input type="checkbox" name="restricted" value="1" checked[i.restricted];
+                        " Restricted (adults only)"
+                    }
+                    span.help { "Only adult Player accounts can see or play this item's files." }
+                }
                 div.field.full {
                     label for="f-location" { "Location — type a path, use › or > for inside" }
                     input #f-location.u-input name="location" value=(i.location) list="location-paths" placeholder="Lounge › Bookcase 1 › Shelf 2" autocomplete="off";
@@ -435,6 +447,8 @@ pub struct DeskView<'a> {
     pub tagline: &'a str,
     pub places: &'a [(Location, i64)],
     pub types: &'a [(MediaType, Vec<FieldDef>)],
+    /// Player accounts waiting for approval.
+    pub accounts_waiting: i64,
     pub flash: Option<&'a str>,
 }
 
@@ -451,7 +465,20 @@ pub fn desk(ctx: &Ctx, v: &DeskView) -> Markup {
                 @if v.pending_embeddings > 0 { " (" (v.pending_embeddings) " waiting to be indexed)" }
             }
             @if let Some(f) = v.flash { p.flash role="status" { (f) } }
-            div.row-actions.desk-actions { a.btn.solid href="/admin/items/new" { "New entry" } a.btn href="/admin/types/new?next=/admin" { "New type" } }
+            div.row-actions.desk-actions {
+                a.btn.solid href="/admin/items/new" { "New entry" }
+                a.btn href="/admin/types/new?next=/admin" { "New type" }
+                a.btn href="/admin/accounts" {
+                    "Player accounts"
+                    @if v.accounts_waiting > 0 {
+                        span.count-badge title="Waiting for approval" {
+                            (v.accounts_waiting)
+                            span.visually-hidden { " waiting for approval" }
+                        }
+                    }
+                }
+                a.btn href="/player/" { "Open the Player" }
+            }
             div.two-col {
                 section.left aria-labelledby="settings-title" {
                     h2 #settings-title .kicker { "The library" }
@@ -517,9 +544,401 @@ pub fn desk(ctx: &Ctx, v: &DeskView) -> Markup {
     )
 }
 
+// ---------- Player accounts ----------
+
+/// The Player accounts page: requests waiting for approval, then
+/// everyone already let in.
+pub fn accounts_page(
+    ctx: &Ctx,
+    accounts: &[Account],
+    default_access: Access,
+    flash: Option<&str>,
+) -> Markup {
+    page(
+        ctx,
+        "Player accounts",
+        Header::Plain,
+        html! {
+            h1.page-title { "Player accounts" }
+            p.page-sub {
+                "People who listen and watch in the "
+                a href="/player/" { "Player" }
+                ". Children never see items marked “Restricted (adults only)”."
+            }
+            div.row-actions.desk-actions { a.btn href="/admin" { "← Librarian's desk" } }
+            (account_lists(accounts, default_access, flash))
+        },
+    )
+}
+
+/// The waiting and approved lists (swapped as one by htmx after approving
+/// or turning down a request).
+pub fn account_lists(accounts: &[Account], default_access: Access, note: Option<&str>) -> Markup {
+    let (approved, waiting): (Vec<&Account>, Vec<&Account>) =
+        accounts.iter().partition(|a| a.approved());
+    html! {
+        div #account-lists {
+            @if let Some(n) = note { p.flash role="status" { (n) } }
+            @if !waiting.is_empty() {
+                section.waiting aria-labelledby="waiting-title" {
+                    h2 #waiting-title .kicker {
+                        "Waiting for approval "
+                        span.count-badge { (waiting.len()) }
+                    }
+                    p.small.muted {
+                        "These people asked for an account in the Player. Approve them (choosing what they may see) "
+                        "or turn the request down."
+                    }
+                    ul.admin-list.accounts {
+                        @for a in &waiting { (waiting_row(a, default_access)) }
+                    }
+                }
+            }
+            section aria-labelledby="approved-title" {
+                @if !waiting.is_empty() { h2 #approved-title .kicker { "Accounts" } }
+                @if approved.is_empty() {
+                    div.empty {
+                        p { @if waiting.is_empty() { "No accounts yet." } @else { "No approved accounts yet." } }
+                        p.small.muted {
+                            "People can ask for one from the Player, or run "
+                            span.mono { "library create-account <name> <email> --adult" }
+                            " on the server."
+                        }
+                    }
+                } @else {
+                    ul.admin-list.accounts {
+                        @for a in &approved { (account_row(a, None)) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A request waiting for approval: approve with an access level, or turn it down.
+fn waiting_row(a: &Account, default_access: Access) -> Markup {
+    html! {
+        li #{ "waiting-" (a.id) } {
+            div.grow {
+                strong.serif { (a.username) }
+                span.small.muted { " · " (a.email) " · asked " (date_long(a.created_at)) }
+            }
+            form method="post" action={ "/admin/accounts/" (a.id) "/approve" }
+                hx-post={ "/admin/accounts/" (a.id) "/approve" }
+                hx-target="#account-lists" hx-swap="outerHTML" {
+                label.visually-hidden for={ "approve-access-" (a.id) } { "Access for " (a.username) }
+                select.u-select.access-select id={ "approve-access-" (a.id) } name="access" {
+                    @for level in [Access::Child, Access::Adult] {
+                        option value=(level.as_str()) selected[default_access == level] { (level.label()) }
+                    }
+                }
+                button.btn.small.solid type="submit" aria-label={ "Approve " (a.username) } { "Approve" }
+            }
+            form method="post" action={ "/admin/accounts/" (a.id) "/reject" }
+                hx-post={ "/admin/accounts/" (a.id) "/reject" }
+                hx-confirm={ "Turn down " (a.username) "'s request? Their account will be deleted." }
+                hx-target="#account-lists" hx-swap="outerHTML" {
+                button.link-btn.small type="submit" aria-label={ "Reject " (a.username) } { "Reject" }
+            }
+        }
+    }
+}
+
+/// One account, with its access select and delete button.
+pub fn account_row(a: &Account, note: Option<&str>) -> Markup {
+    html! {
+        li #{ "account-" (a.id) } {
+            div.grow {
+                strong.serif { (a.username) }
+                span.small.muted { " · " (a.email) " · joined " (date_long(a.created_at)) }
+            }
+            form method="post" action={ "/admin/accounts/" (a.id) "/access" }
+                hx-post={ "/admin/accounts/" (a.id) "/access" } hx-trigger="change"
+                hx-target={ "#account-" (a.id) } hx-swap="outerHTML" {
+                label.visually-hidden for={ "access-" (a.id) } { "Access for " (a.username) }
+                select.u-select.access-select id={ "access-" (a.id) } name="access" {
+                    @for level in [Access::Child, Access::Adult] {
+                        option value=(level.as_str()) selected[a.access == level] { (level.label()) }
+                    }
+                }
+                noscript { button.btn.small type="submit" { "Change" } }
+                @if let Some(n) = note { span.small.ok role="status" { (n) } }
+            }
+            form method="post" action={ "/admin/accounts/" (a.id) "/delete" }
+                data-confirm={ "Delete " (a.username) "'s account, playlists and favourites?" } {
+                button.link-btn.small type="submit" { "Delete" }
+            }
+        }
+    }
+}
+
+// ---------- the upload studio ----------
+
+/// What the upload studio shows.
+pub struct StudioData {
+    pub item: Item,
+    pub files: Vec<MediaFile>,
+    pub subtitles: HashMap<i64, Vec<Subtitle>>,
+}
+
+/// "1:02:03" or "4:05".
+pub fn duration_label(ms: i64) -> String {
+    let total = ms.max(0) / 1000;
+    let (h, m, s) = (total / 3600, (total / 60) % 60, total % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+/// "4.2 MB", "1.3 GB".
+pub fn size_label(bytes: i64) -> String {
+    const UNITS: [&str; 4] = ["bytes", "KB", "MB", "GB"];
+    let mut value = bytes.max(0) as f64;
+    let mut unit = 0;
+    while value >= 1000.0 && unit < UNITS.len() - 1 {
+        value /= 1000.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} bytes")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+pub fn studio_page(
+    ctx: &Ctx,
+    d: &StudioData,
+    flash: Option<&str>,
+    max_bytes: u64,
+    lookups_enabled: bool,
+) -> Markup {
+    let it = &d.item;
+    let accept = crate::digital::ACCEPTED
+        .iter()
+        .chain(["srt", "vtt"].iter())
+        .map(|e| format!(".{e}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    page(
+        ctx,
+        &format!("Digital copy of {}", it.title),
+        Header::Plain,
+        html! {
+            h1.page-title { "Digital copy — " i { (it.title) } }
+            p.page-sub {
+                "Drop in the files ripped from a CD or DVD. They are stored exactly as they are — nothing is converted."
+                @if it.restricted { " This item is " b { "restricted" } ": only adult accounts will see it." }
+            }
+            @if let Some(f) = flash { p.flash role="status" { (f) } }
+            div.row-actions.desk-actions {
+                a.btn href={ "/items/" (it.id) } { "← Back to the entry" }
+                a.btn href="/player/" { "Open the Player" }
+            }
+            section #studio.studio data-item=(it.id) data-max-bytes=(max_bytes) aria-labelledby="studio-title" {
+                h2 #studio-title .kicker { "I. Add files" }
+                div #drop-zone.drop-zone tabindex="0" {
+                    p.drop-title { "Drop a folder or files here" }
+                    p.small.muted {
+                        "Music (MP3, M4A, FLAC, Ogg, Opus, WAV), films (MP4, WebM, MKV, MOV), documents (PDF, EPUB) "
+                        "and subtitles (.srt, .vtt). Up to " (max_bytes / (1024 * 1024)) " MB a file."
+                    }
+                    div.row-actions.center {
+                        label.btn.solid for="pick-folder" { "Choose a folder" }
+                        label.btn for="pick-files" { "Choose files" }
+                    }
+                    input #pick-folder.picker type="file" webkitdirectory multiple;
+                    input #pick-files.picker type="file" multiple accept=(accept);
+                }
+                noscript { p.flash.err { "The upload studio needs JavaScript switched on." } }
+                (musicbrainz_panel(it, lookups_enabled))
+                div #pending.pending hidden {
+                    div.pending-head {
+                        h3.kicker { "Ready to upload" }
+                        span #pending-summary.small.muted {}
+                    }
+                    p.small.muted.pending-hint { "Check the titles and numbers — they were read from the file names. Drag rows by their handle, or use the arrows, to reorder." }
+                    div.table-scroll {
+                        table.pending-table {
+                            thead {
+                                tr {
+                                    th scope="col" { span.visually-hidden { "Order" } }
+                                    th scope="col" { "Disc" }
+                                    th scope="col" { "Track" }
+                                    th scope="col" { "Title" }
+                                    th scope="col" { "Kind" }
+                                    th scope="col" { "Length" }
+                                    th scope="col" { "Size" }
+                                    th scope="col" { "Subtitles" }
+                                    th scope="col" { "Progress" }
+                                    th scope="col" { span.visually-hidden { "Remove" } }
+                                }
+                            }
+                            tbody #pending-rows {}
+                        }
+                    }
+                    p #pending-notes.small.muted {}
+                    div.save-bar {
+                        span #upload-status.grow.small role="status" {}
+                        button #clear-pending.btn type="button" { "Clear the list" }
+                        button #upload-all.btn.accent type="button" { "Upload all" }
+                    }
+                }
+            }
+            section #existing.studio-existing aria-labelledby="existing-title" {
+                h2 #existing-title .kicker { "II. In the library" }
+                (media_list(d))
+            }
+            script src={ "/static/js/media-upload.js?v=" (ctx.asset_version) } defer {}
+            script src={ "/static/js/musicbrainz-fill.js?v=" (ctx.asset_version) } defer {}
+        },
+    )
+}
+
+/// "Fill from MusicBrainz": shown by the studio's script while music files
+/// are waiting. Its script draws the candidates and the preview.
+fn musicbrainz_panel(it: &Item, enabled: bool) -> Markup {
+    let query = crate::web::fill::prefill_query(it);
+    let barcode = crate::web::fill::item_barcode(it).unwrap_or_default();
+    html! {
+        section #mb-fill.mb-fill hidden aria-labelledby="mb-fill-title"
+            data-enabled=(if enabled { "1" } else { "0" })
+            data-barcode=(barcode)
+            data-item-creator=(it.creator)
+            data-item-year=(it.year.map(|y| y.to_string()).unwrap_or_default()) {
+            div.mb-head {
+                h3 #mb-fill-title .kicker.accent { "Fill from MusicBrainz" }
+                p.small.muted {
+                    "Find the CD on MusicBrainz and copy its disc numbers, track numbers and titles into the list below. "
+                    "Nothing changes until you press Apply."
+                }
+            }
+            @if enabled {
+                form #mb-search.mb-search role="search" {
+                    label.visually-hidden for="mb-query" { "Search MusicBrainz" }
+                    input #mb-query.u-input type="search" name="q" value=(query) maxlength="200"
+                        placeholder="Artist and album, a barcode, or a MusicBrainz link" autocomplete="off";
+                    button.btn.solid type="submit" { "Search" }
+                }
+                @if !barcode.is_empty() {
+                    p.small.muted { "The barcode on this entry (" span.mono { (barcode) } ") is searched too." }
+                }
+                p #mb-status.small role="status" {}
+                ol #mb-candidates.mb-candidates {}
+                div #mb-preview.mb-preview hidden {}
+            } @else {
+                p.mb-off.small {
+                    "Online lookups are switched off (" span.mono { "[lookup] enabled = false" }
+                    " in library.toml), so track details can't be fetched. Check the titles and numbers below by hand."
+                }
+            }
+        }
+    }
+}
+
+/// The files already uploaded, with inline editing. Re-rendered by htmx
+/// after each change.
+pub fn media_list(d: &StudioData) -> Markup {
+    let id = d.item.id;
+    let last = d.files.len().saturating_sub(1);
+    html! {
+        div #media-list data-count=(d.files.len()) {
+            @if d.files.is_empty() {
+                p.muted.serif.italic { "No files yet. Add some above." }
+            } @else {
+                p.small.muted {
+                    (d.files.len()) " file" @if d.files.len() != 1 { "s" }
+                    @let total: i64 = d.files.iter().filter_map(|m| m.duration_ms).sum();
+                    @if total > 0 { " · " (duration_label(total)) }
+                    " · " (size_label(d.files.iter().map(|m| m.size_bytes).sum()))
+                }
+                ol.media-files {
+                    @for (n, m) in d.files.iter().enumerate() {
+                        li.media-file #{ "media-" (m.id) } {
+                            div.media-main {
+                                span.kind-badge.{ "kind-" (m.kind.as_str()) } { (m.kind.label()) }
+                                form.media-edit method="post" action={ "/admin/items/" (id) "/media/" (m.id) }
+                                    hx-post={ "/admin/items/" (id) "/media/" (m.id) }
+                                    hx-target="#media-list" hx-swap="outerHTML" {
+                                    label.mini { "Disc"
+                                        input.u-input.num name="disc" value=(m.disc) inputmode="numeric" size="2" maxlength="3";
+                                    }
+                                    label.mini { "Track"
+                                        input.u-input.num name="track" value=(m.track.map(|t| t.to_string()).unwrap_or_default()) inputmode="numeric" size="3" maxlength="4";
+                                    }
+                                    label.mini.grow { "Title"
+                                        input.u-input name="title" value=(m.title) maxlength="300" required;
+                                    }
+                                    button.btn.small type="submit" { "Save" }
+                                }
+                                div.media-tools {
+                                    span.small.muted.mono {
+                                        @if let Some(ms) = m.duration_ms { (duration_label(ms)) " · " }
+                                        (size_label(m.size_bytes)) " · " (m.original_name)
+                                    }
+                                    div.row-actions {
+                                        form method="post" action={ "/admin/items/" (id) "/media/" (m.id) "/move" }
+                                            hx-post={ "/admin/items/" (id) "/media/" (m.id) "/move" }
+                                            hx-target="#media-list" hx-swap="outerHTML" {
+                                            button.btn.small type="submit" name="dir" value="up" disabled[n == 0] aria-label={ "Move " (m.title) " up" } { "↑" }
+                                            button.btn.small type="submit" name="dir" value="down" disabled[n == last] aria-label={ "Move " (m.title) " down" } { "↓" }
+                                        }
+                                        form method="post" action={ "/admin/items/" (id) "/media/" (m.id) "/delete" }
+                                            hx-post={ "/admin/items/" (id) "/media/" (m.id) "/delete" }
+                                            hx-confirm={ "Delete “" (m.title) "” for good?" }
+                                            hx-target="#media-list" hx-swap="outerHTML" {
+                                            button.link-btn.small type="submit" { "Delete" }
+                                        }
+                                    }
+                                }
+                            }
+                            @if m.kind == MediaKind::Video {
+                                div.subtitles {
+                                    span.label { "Subtitles" }
+                                    @let subs = d.subtitles.get(&m.id).map(Vec::as_slice).unwrap_or(&[]);
+                                    @if subs.is_empty() { span.small.muted { "None" } }
+                                    @for s in subs {
+                                        form.sub-chip method="post" action={ "/admin/items/" (id) "/subtitles/" (s.id) "/delete" }
+                                            hx-post={ "/admin/items/" (id) "/subtitles/" (s.id) "/delete" }
+                                            hx-confirm={ "Remove the " (s.label) " subtitles?" }
+                                            hx-target="#media-list" hx-swap="outerHTML" {
+                                            span { (s.label) " " span.mono.small { "(" (s.language) ")" } }
+                                            button.x type="submit" aria-label={ "Remove " (s.label) " subtitles" } { "×" }
+                                        }
+                                    }
+                                    form.sub-add method="post" action={ "/admin/items/" (id) "/media/" (m.id) "/subtitles" } enctype="multipart/form-data" {
+                                        label.visually-hidden for={ "sub-file-" (m.id) } { "Subtitle file" }
+                                        input id={ "sub-file-" (m.id) } type="file" name="file" accept=".srt,.vtt" required;
+                                        label.visually-hidden for={ "sub-lang-" (m.id) } { "Language code" }
+                                        input.u-input.num id={ "sub-lang-" (m.id) } name="language" placeholder="en" size="5" maxlength="12";
+                                        label.visually-hidden for={ "sub-label-" (m.id) } { "Label" }
+                                        input.u-input id={ "sub-label-" (m.id) } name="label" placeholder="English (SDH)" maxlength="60";
+                                        button.btn.small type="submit" { "Add subtitles" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn labels_for_lengths_and_sizes() {
+        assert_eq!(duration_label(65_000), "1:05");
+        assert_eq!(duration_label(3_725_000), "1:02:05");
+        assert_eq!(size_label(999), "999 bytes");
+        assert_eq!(size_label(4_200_000), "4.2 MB");
+        assert_eq!(size_label(1_300_000_000), "1.3 GB");
+    }
 
     #[test]
     fn capitalise_first_letter() {

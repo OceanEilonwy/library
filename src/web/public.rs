@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use super::auth::{self, Login};
 use super::{AppError, AppState, Fields, Res, Viewer, html, html_status, see_other};
-use crate::db::{items, loans, locations, photos};
+use crate::db::{items, loans, locations, media_files, photos};
 use crate::embed;
 use crate::search::{self, Advanced, Availability, Filters, Sort};
 use crate::views::public::{self as pv, FilterChoices, ItemView, LoanUi, SearchState};
@@ -192,11 +192,17 @@ pub async fn item(
     Path(id): Path<i64>,
     Query(p): Query<ItemParams>,
 ) -> Res {
+    let admin = viewer.admin;
     let data = st
         .db
         .read(move |c| {
             let Some(item) = items::get(c, id)? else {
                 return Ok(None);
+            };
+            let media = if admin {
+                media_files::for_item(c, id)?
+            } else {
+                Vec::new()
             };
             let fields = items::field_values(c, id)?;
             let photos = photos::for_item(c, id)?;
@@ -214,10 +220,10 @@ pub async fn item(
                 }
                 None => Vec::new(),
             };
-            Ok(Some((item, fields, photos, loans, similar)))
+            Ok(Some((item, fields, photos, loans, similar, media)))
         })
         .await?;
-    let Some((item, fields, photos, loans, similar)) = data else {
+    let Some((item, fields, photos, loans, similar, media)) = data else {
         return Err(AppError::NotFound);
     };
     let ctx = st.ctx(&viewer).await?;
@@ -235,6 +241,7 @@ pub async fn item(
             photos: &photos,
             loans: &loans,
             similar: &similar,
+            media: &media,
         },
         flash,
     )))

@@ -10,9 +10,10 @@ use axum::routing::{get, post};
 use serde::Deserialize;
 
 use super::{Admin, AppError, AppState, Fields, Res, Viewer, html, html_status, see_other};
+use crate::db::accounts::{self, Access};
 use crate::db::items::{self, Invalid, ItemInput};
 use crate::db::types::{self, FieldKind, FieldScope, Lookup, NewType};
-use crate::db::{locations, photos, settings};
+use crate::db::{locations, media_files, photos, settings};
 use crate::dupes::{self, Possible, Probe};
 use crate::lookup::Candidate;
 use crate::media;
@@ -40,6 +41,11 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/fields/{id}/delete", post(delete_field))
         .route("/admin/places/{id}/rename", post(rename_place))
         .route("/admin/places/{id}/delete", post(delete_place))
+        .route("/admin/accounts", get(accounts_page))
+        .route("/admin/accounts/{id}/approve", post(approve_account))
+        .route("/admin/accounts/{id}/reject", post(reject_account))
+        .route("/admin/accounts/{id}/access", post(set_access))
+        .route("/admin/accounts/{id}/delete", post(delete_account))
 }
 
 /// Reads the add/edit form into an [`ItemInput`].
@@ -71,6 +77,7 @@ pub fn input_from(f: &Fields) -> ItemInput {
         tags: f.get("tags").to_owned(),
         notes: f.get("notes").to_owned(),
         location: f.get("location").to_owned(),
+        restricted: f.has("restricted"),
         fields,
     }
 }
@@ -380,9 +387,21 @@ pub async fn update(
 }
 
 pub async fn delete(State(st): State<AppState>, Admin(_): Admin, Path(id): Path<i64>) -> Res {
-    let files = st.db.write(move |c| items::delete(c, id)).await?;
+    let (files, digital) = st
+        .db
+        .write(move |c| {
+            let digital = media_files::files_for_item(c, id)?;
+            Ok((items::delete(c, id)?, digital))
+        })
+        .await?;
     let dir = st.photos_dir();
-    tokio::task::spawn_blocking(move || files.iter().for_each(|f| media::delete_photo(&dir, f)));
+    let media_dir = st.media_dir();
+    tokio::task::spawn_blocking(move || {
+        files.iter().for_each(|f| media::delete_photo(&dir, f));
+        for f in digital.iter().filter(|f| media::is_safe_name(f)) {
+            let _ = std::fs::remove_file(media_dir.join(f));
+        }
+    });
     Ok(see_other("/search?sort=added"))
 }
 
@@ -693,7 +712,7 @@ pub async fn desk(
         (true, true) if st.semantic.is_indexing() => "indexing",
         (true, true) => "ready",
     };
-    let (count, out, pending, places, types_fields, tagline) = st
+    let (count, out, pending, places, types_fields, tagline, waiting) = st
         .db
         .read(|c| {
             let count = items::count(c)?;
@@ -714,7 +733,8 @@ pub async fn desk(
                 tf.push((t, f));
             }
             let tagline = settings::get(c, settings::TAGLINE)?;
-            Ok((count, out, pending, places, tf, tagline))
+            let waiting = accounts::pending_count(c)?;
+            Ok((count, out, pending, places, tf, tagline, waiting))
         })
         .await?;
     let flash = match p.msg.as_str() {
@@ -738,6 +758,7 @@ pub async fn desk(
             tagline: &tagline,
             places: &places,
             types: &types_fields,
+            accounts_waiting: waiting,
             flash,
         },
     )))
@@ -780,4 +801,133 @@ pub async fn delete_place(State(st): State<AppState>, Admin(_): Admin, Path(id):
         Ok(()) => Ok(see_other("/admin?msg=removed")),
         Err(e) => Ok(see_other(&err_redirect(&e))),
     }
+}
+
+#[derive(Deserialize, Default)]
+pub struct AccountsParams {
+    #[serde(default)]
+    msg: String,
+}
+
+pub async fn accounts_page(
+    State(st): State<AppState>,
+    Admin(viewer): Admin,
+    Query(p): Query<AccountsParams>,
+) -> Res {
+    let ctx = st.ctx(&viewer).await?;
+    let list = st.db.read(accounts::list).await?;
+    let flash = match p.msg.as_str() {
+        "removed" => Some("Account deleted."),
+        "saved" => Some("Saved."),
+        "approved" => Some("Approved. They can sign in now."),
+        "rejected" => Some("Request turned down; the account was deleted."),
+        _ => None,
+    };
+    Ok(html(av::accounts_page(
+        &ctx,
+        &list,
+        st.cfg.accounts.default_access,
+        flash,
+    )))
+}
+
+/// The account lists again, for htmx after approving or rejecting.
+async fn account_lists(st: &AppState, note: &str) -> Res {
+    let list = st.db.read(accounts::list).await?;
+    Ok(html(av::account_lists(
+        &list,
+        st.cfg.accounts.default_access,
+        Some(note),
+    )))
+}
+
+pub async fn approve_account(
+    State(st): State<AppState>,
+    Admin(viewer): Admin,
+    Path(id): Path<i64>,
+    form: Fields,
+) -> Res {
+    let access = Access::parse(form.get("access"))
+        .ok_or_else(|| AppError::BadRequest("Choose child or adult.".into()))?;
+    let account = st
+        .db
+        .write(move |c| {
+            if !accounts::approve(c, id, access)? {
+                return Ok(None);
+            }
+            accounts::get(c, id)
+        })
+        .await?
+        .ok_or(AppError::NotFound)?;
+    tracing::info!(username = %account.username, access = access.as_str(), "account approved");
+    if viewer.htmx {
+        let note = format!(
+            "Approved {} with {} access. They can sign in now.",
+            account.username,
+            access.as_str()
+        );
+        return account_lists(&st, &note).await;
+    }
+    Ok(see_other("/admin/accounts?msg=approved"))
+}
+
+pub async fn reject_account(
+    State(st): State<AppState>,
+    Admin(viewer): Admin,
+    Path(id): Path<i64>,
+) -> Res {
+    let account = st
+        .db
+        .write(move |c| {
+            let Some(account) = accounts::get(c, id)? else {
+                return Ok(None);
+            };
+            Ok(accounts::reject(c, id)?.then_some(account))
+        })
+        .await?
+        .ok_or(AppError::NotFound)?;
+    tracing::info!(username = %account.username, "account request turned down");
+    if viewer.htmx {
+        let note = format!(
+            "Turned down {}'s request; the account was deleted.",
+            account.username
+        );
+        return account_lists(&st, &note).await;
+    }
+    Ok(see_other("/admin/accounts?msg=rejected"))
+}
+
+pub async fn set_access(
+    State(st): State<AppState>,
+    Admin(viewer): Admin,
+    Path(id): Path<i64>,
+    form: Fields,
+) -> Res {
+    let access = Access::parse(form.get("access"))
+        .ok_or_else(|| AppError::BadRequest("Choose child or adult.".into()))?;
+    let account = st
+        .db
+        .write(move |c| {
+            if !accounts::set_access(c, id, access)? {
+                return Ok(None);
+            }
+            accounts::get(c, id)
+        })
+        .await?
+        .ok_or(AppError::NotFound)?;
+    if viewer.htmx {
+        return Ok(html(av::account_row(&account, Some("Saved"))));
+    }
+    Ok(see_other("/admin/accounts?msg=saved"))
+}
+
+pub async fn delete_account(
+    State(st): State<AppState>,
+    Admin(_): Admin,
+    Path(id): Path<i64>,
+) -> Res {
+    if !st.db.write(move |c| accounts::delete(c, id)).await? {
+        return Err(AppError::NotFound);
+    }
+    Ok(see_other("/admin/accounts?msg=removed"))
 }

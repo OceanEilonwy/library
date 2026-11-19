@@ -1,8 +1,14 @@
 //! HTTP: routing, shared state, extractors, middleware and static files.
 
+pub mod accounts;
 pub mod admin;
+pub mod api;
 pub mod auth;
+pub mod fill;
+pub mod player;
 pub mod public;
+pub mod stream;
+pub mod studio;
 #[cfg(test)]
 mod tests;
 
@@ -18,12 +24,13 @@ use axum::http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use axum::http::{Method, StatusCode, request::Parts};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::{Form, Router};
 use maud::Markup;
 use rust_embed::RustEmbed;
 use sha2::{Digest, Sha256};
 use tower_http::compression::CompressionLayer;
+use tower_http::compression::predicate::{DefaultPredicate, Predicate};
 
 use crate::config::Config;
 use crate::db::{Db, settings, types};
@@ -41,6 +48,7 @@ pub struct AppState {
     pub candidates: Arc<CandidateCache>,
     pub auth: Arc<Auth>,
     pub art: Arc<ArtCache>,
+    pub throttles: Arc<accounts::Throttles>,
 }
 
 impl AppState {
@@ -65,10 +73,64 @@ impl AppState {
     pub fn photos_dir(&self) -> PathBuf {
         self.cfg.photos_dir()
     }
+
+    pub fn media_dir(&self) -> PathBuf {
+        self.cfg.media_dir()
+    }
+}
+
+/// The Player's JSON API.
+fn api_routes() -> Router<AppState> {
+    use axum::routing::put;
+    Router::new()
+        .route("/api/account/register", post(accounts::register))
+        .route("/api/account/login", post(accounts::login))
+        .route("/api/account/logout", post(accounts::logout))
+        .route("/api/account/me", get(accounts::me))
+        .route("/api/items", get(api::items))
+        .route("/api/items/{id}", get(api::item))
+        .route("/api/media/check", post(api::check))
+        .route("/api/media/{id}", get(api::media))
+        .route("/api/media/{id}/stream", get(stream::stream))
+        .route("/api/subtitles/{id}", get(stream::subtitle))
+        .route(
+            "/api/playlists",
+            get(api::playlists).post(api::create_playlist),
+        )
+        .route(
+            "/api/playlists/{id}",
+            get(api::playlist)
+                .patch(api::rename_playlist)
+                .delete(api::delete_playlist),
+        )
+        .route(
+            "/api/playlists/{id}/entries",
+            post(api::append_entries).put(api::replace_entries),
+        )
+        .route("/api/favourites", get(api::favourites))
+        .route(
+            "/api/favourites/{media_id}",
+            put(api::add_favourite).delete(api::remove_favourite),
+        )
+        .route(
+            "/api/{*rest}",
+            any(|| async { accounts::ApiError::NotFound }),
+        )
 }
 
 pub fn router(state: AppState) -> Router {
-    let admin = admin::routes().layer(DefaultBodyLimit::max(100 << 20));
+    let admin = admin::routes()
+        .merge(studio::routes())
+        .merge(fill::routes())
+        .layer(DefaultBodyLimit::max(100 << 20))
+        // The upload studio streams files to disk and checks the size itself.
+        .merge(studio::upload_routes());
+    // Media streams keep their exact bytes (ranges refer to them).
+    let compress = DefaultPredicate::new().and(
+        |_: StatusCode, _: axum::http::Version, h: &HeaderMap, _: &axum::http::Extensions| {
+            !h.contains_key(header::ACCEPT_RANGES)
+        },
+    );
     Router::new()
         .route("/", get(public::landing))
         .route("/search", get(public::search))
@@ -86,12 +148,16 @@ pub fn router(state: AppState) -> Router {
         .route("/art/{file}", get(art_file))
         .route("/static/{*path}", get(static_file))
         .route("/healthz", get(|| async { "ok" }))
+        .route("/player", get(player::redirect_to_root))
+        .route("/player/", get(player::root))
+        .route("/player/{*path}", get(player::file))
+        .merge(api_routes())
         .merge(admin)
         .layer(DefaultBodyLimit::max(64 << 10))
         .layer(middleware::from_fn(same_origin))
         .layer(middleware::from_fn_with_state(state.clone(), site_password))
         .layer(middleware::from_fn(security_headers))
-        .layer(CompressionLayer::new())
+        .layer(CompressionLayer::new().compress_when(compress))
         .with_state(state)
 }
 
@@ -239,6 +305,8 @@ impl FromRequestParts<AppState> for Admin {
 
 pub struct Upload {
     pub name: String,
+    /// The file name the browser sent.
+    pub file_name: String,
     pub bytes: Vec<u8>,
 }
 
@@ -286,7 +354,7 @@ impl<S: Send + Sync> FromRequest<S> for Fields {
                 .map_err(|e| AppError::BadRequest(e.body_text()))?
             {
                 let name = field.name().unwrap_or("").to_owned();
-                if field.file_name().is_some() {
+                if let Some(file_name) = field.file_name().map(str::to_owned) {
                     let bytes = field
                         .bytes()
                         .await
@@ -294,6 +362,7 @@ impl<S: Send + Sync> FromRequest<S> for Fields {
                     if !bytes.is_empty() {
                         out.files.push(Upload {
                             name,
+                            file_name,
                             bytes: bytes.to_vec(),
                         });
                     }
@@ -320,26 +389,72 @@ impl<S: Send + Sync> FromRequest<S> for Fields {
 
 // ---------- middleware ----------
 
-/// The Content-Security-Policy, allowing the one inline style by hash.
-fn csp() -> &'static HeaderValue {
-    static V: OnceLock<HeaderValue> = OnceLock::new();
-    V.get_or_init(|| {
+/// Which security policy a response gets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Zone {
+    /// The htmx site.
+    Site,
+    /// The Player PWA under `/player/`.
+    Player,
+    /// Media streams, which the Player may show in a frame (PDFs).
+    Stream,
+}
+
+impl Zone {
+    fn of(path: &str) -> Self {
+        if path == "/player" || path.starts_with("/player/") {
+            Zone::Player
+        } else if path.starts_with("/api/media/") && path.ends_with("/stream") {
+            Zone::Stream
+        } else {
+            Zone::Site
+        }
+    }
+}
+
+/// The Content-Security-Policy for a zone. The site allows its one inline
+/// style by hash; the Player also needs workers, its manifest, framed PDFs
+/// and inline style attributes (set by its components); streams may only be
+/// framed by the site itself.
+fn csp(zone: Zone) -> &'static HeaderValue {
+    static SITE: OnceLock<HeaderValue> = OnceLock::new();
+    static PLAYER: OnceLock<HeaderValue> = OnceLock::new();
+    static STREAM: OnceLock<HeaderValue> = OnceLock::new();
+    let build = |zone: Zone| {
         use base64::Engine;
         let hash = base64::engine::general_purpose::STANDARD
             .encode(Sha256::digest(views::CRITICAL_CSS.as_bytes()));
+        let (style, extra, ancestors) = match zone {
+            Zone::Site => (format!("'self' 'sha256-{hash}'"), "", "'none'"),
+            Zone::Player => (
+                "'self' 'unsafe-inline'".to_owned(),
+                " worker-src 'self'; manifest-src 'self'; frame-src 'self';",
+                "'none'",
+            ),
+            // Media bytes, never HTML. Only framing is limited: a stricter
+            // policy (object-src) stops Chrome's PDF viewer showing PDFs.
+            Zone::Stream => return HeaderValue::from_static("frame-ancestors 'self'"),
+        };
         let policy = format!(
-            "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'sha256-{hash}'; \
-             script-src 'self'; font-src 'self'; connect-src 'self'; media-src 'self' blob:; \
-             object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+            "default-src 'self'; img-src 'self' data: blob:; style-src {style}; \
+             script-src 'self'; font-src 'self'; connect-src 'self'; media-src 'self' blob:;{extra} \
+             object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors {ancestors}"
         );
-        HeaderValue::from_str(&policy).expect("valid header")
-    })
+        HeaderValue::from_str(&policy)
+            .unwrap_or_else(|_| HeaderValue::from_static("default-src 'self'"))
+    };
+    match zone {
+        Zone::Site => SITE.get_or_init(|| build(Zone::Site)),
+        Zone::Player => PLAYER.get_or_init(|| build(Zone::Player)),
+        Zone::Stream => STREAM.get_or_init(|| build(Zone::Stream)),
+    }
 }
 
 async fn security_headers(req: Request, next: Next) -> Response {
+    let zone = Zone::of(req.uri().path());
     let mut res = next.run(req).await;
     let h = res.headers_mut();
-    h.insert(header::CONTENT_SECURITY_POLICY, csp().clone());
+    h.insert(header::CONTENT_SECURITY_POLICY, csp(zone).clone());
     h.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
@@ -348,7 +463,14 @@ async fn security_headers(req: Request, next: Next) -> Response {
         header::REFERRER_POLICY,
         HeaderValue::from_static("same-origin"),
     );
-    h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    h.insert(
+        header::X_FRAME_OPTIONS,
+        HeaderValue::from_static(if zone == Zone::Stream {
+            "SAMEORIGIN"
+        } else {
+            "DENY"
+        }),
+    );
     h.insert(
         HeaderName::from_static("permissions-policy"),
         HeaderValue::from_static("camera=(self), microphone=(), geolocation=()"),
@@ -461,7 +583,13 @@ pub fn asset_version() -> &'static str {
     static V: OnceLock<String> = OnceLock::new();
     V.get_or_init(|| {
         let mut h = Sha256::new();
-        for f in ["css/app.css", "js/app.js", "js/htmx.min.js"] {
+        for f in [
+            "css/app.css",
+            "js/app.js",
+            "js/htmx.min.js",
+            "js/media-upload.js",
+            "js/musicbrainz-fill.js",
+        ] {
             if let Some(a) = Assets::get(f) {
                 h.update(&a.data);
             }

@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use crate::db::accounts::Access;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -33,6 +35,50 @@ pub struct Config {
     pub art_dir: Option<PathBuf>,
     pub semantic: SemanticConfig,
     pub lookup: LookupConfig,
+    pub accounts: AccountsConfig,
+    pub media: MediaConfig,
+}
+
+/// Player accounts.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AccountsConfig {
+    /// Access level of accounts made from the Player (`child` or `adult`).
+    pub default_access: Access,
+    /// Let anyone make an account from the Player.
+    pub open_registration: bool,
+}
+
+/// Digital copies.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MediaConfig {
+    /// Largest single file the upload studio accepts, in megabytes.
+    pub max_upload_mb: u64,
+}
+
+impl Default for AccountsConfig {
+    fn default() -> Self {
+        Self {
+            default_access: Access::Child,
+            open_registration: true,
+        }
+    }
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        Self {
+            max_upload_mb: 20_000,
+        }
+    }
+}
+
+impl MediaConfig {
+    /// The upload limit in bytes.
+    pub fn max_upload_bytes(&self) -> u64 {
+        self.max_upload_mb.saturating_mul(1024 * 1024)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -61,6 +107,9 @@ pub struct LookupConfig {
     pub open_library_url: String,
     pub google_books_url: String,
     pub musicbrainz_url: String,
+    /// Milliseconds between requests to MusicBrainz (at least 1000 for
+    /// musicbrainz.org itself; lower only for a local mirror).
+    pub musicbrainz_interval_ms: u64,
     pub tmdb_url: String,
     pub upc_url: String,
 }
@@ -77,6 +126,8 @@ impl Default for Config {
             art_dir: None,
             semantic: SemanticConfig::default(),
             lookup: LookupConfig::default(),
+            accounts: AccountsConfig::default(),
+            media: MediaConfig::default(),
         }
     }
 }
@@ -101,6 +152,7 @@ impl Default for LookupConfig {
             open_library_url: "https://openlibrary.org".into(),
             google_books_url: "https://www.googleapis.com/books/v1".into(),
             musicbrainz_url: "https://musicbrainz.org/ws/2".into(),
+            musicbrainz_interval_ms: 1000,
             tmdb_url: "https://api.themoviedb.org/3".into(),
             upc_url: "https://api.upcitemdb.com/prod/trial".into(),
         }
@@ -173,6 +225,11 @@ impl Config {
         self.data_dir.join("photos")
     }
 
+    /// Where digital copies (media files and subtitles) are stored.
+    pub fn media_dir(&self) -> PathBuf {
+        self.data_dir.join("media")
+    }
+
     pub fn models_dir(&self) -> PathBuf {
         self.data_dir.join("models")
     }
@@ -199,6 +256,28 @@ mod tests {
         assert!(cfg.semantic.enabled);
         assert_eq!(cfg.db_path(), PathBuf::from("data/library.sqlite3"));
         assert_eq!(cfg.art_dir(), PathBuf::from("data/art"));
+        assert_eq!(cfg.media_dir(), PathBuf::from("data/media"));
+        assert_eq!(cfg.accounts.default_access, Access::Child);
+        assert!(cfg.accounts.open_registration);
+        assert_eq!(cfg.media.max_upload_mb, 20_000);
+    }
+
+    #[test]
+    fn player_sections_parse() {
+        let cfg = Config::parse(
+            r#"
+            [accounts]
+            default_access = "adult"
+            open_registration = false
+            [media]
+            max_upload_mb = 5
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.accounts.default_access, Access::Adult);
+        assert!(!cfg.accounts.open_registration);
+        assert_eq!(cfg.media.max_upload_bytes(), 5 * 1024 * 1024);
+        assert!(Config::parse("[accounts]\ndefault_access = \"teen\"").is_err());
     }
 
     #[test]

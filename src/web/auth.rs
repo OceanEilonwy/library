@@ -1,10 +1,11 @@
 //! The admin password and the "unlocked" session cookie.
 //!
-//! There are no accounts. Entering the admin password sets a signed session
-//! cookie (no expiry date, so the browser drops it when it closes; the server
-//! also refuses cookies older than 30 days).
+//! The Librarian has no account: entering the admin password sets a signed
+//! session cookie (no expiry date, so the browser drops it when it closes;
+//! the server also refuses cookies older than 30 days). Player accounts are
+//! separate (see `web::accounts`); [`Throttle`] limits guessing for both.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -137,6 +138,58 @@ impl Auth {
     }
 }
 
+/// Counts failures per key in a sliding window, so password guessing can be
+/// slowed down (the same pattern [`Auth`] uses for the admin password).
+pub struct Throttle {
+    limit: usize,
+    window: Duration,
+    hits: Mutex<HashMap<String, VecDeque<Instant>>>,
+}
+
+impl Throttle {
+    pub fn new(limit: usize, window: Duration) -> Self {
+        Self {
+            limit,
+            window,
+            hits: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// True once `key` has had `limit` hits inside the window.
+    pub fn blocked(&self, key: &str) -> bool {
+        self.blocked_over(key, self.limit)
+    }
+
+    /// Like [`Throttle::blocked`] with a different limit for this key.
+    pub fn blocked_over(&self, key: &str, limit: usize) -> bool {
+        let mut hits = self.hits.lock().unwrap_or_else(|e| e.into_inner());
+        let window = self.window;
+        hits.retain(|_, q| {
+            while q.front().is_some_and(|t| t.elapsed() > window) {
+                q.pop_front();
+            }
+            !q.is_empty()
+        });
+        hits.get(key).is_some_and(|q| q.len() >= limit)
+    }
+
+    pub fn record(&self, key: &str) {
+        self.hits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key.to_owned())
+            .or_default()
+            .push_back(Instant::now());
+    }
+
+    pub fn clear(&self, key: &str) {
+        self.hits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(key);
+    }
+}
+
 pub fn hash_password(password: &str) -> Result<String> {
     let salt = SaltString::generate(&mut OsRng);
     Ok(Argon2::default()
@@ -243,6 +296,22 @@ mod tests {
             assert!(matches!(a.login("nope"), Login::Wrong));
         }
         assert!(matches!(a.login("open sesame"), Login::TooMany));
+    }
+
+    #[test]
+    fn throttle_counts_per_key() {
+        let t = Throttle::new(2, Duration::from_secs(60));
+        assert!(!t.blocked("a"));
+        t.record("a");
+        t.record("a");
+        assert!(t.blocked("a"));
+        assert!(!t.blocked("b"));
+        t.clear("a");
+        assert!(!t.blocked("a"));
+        let quick = Throttle::new(1, Duration::from_millis(1));
+        quick.record("a");
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!quick.blocked("a"), "old hits expire");
     }
 
     #[test]

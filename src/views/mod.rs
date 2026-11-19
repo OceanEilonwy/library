@@ -97,6 +97,7 @@ fn topbar(ctx: &Ctx, header: &Header) -> Markup {
             div.topbar {
                 span { (today) }
                 nav aria-label="Site" {
+                    (player_button())
                     @if ctx.admin {
                         a href="/admin/items/new" { "New entry" }
                         span.badge-admin { "● Librarian" }
@@ -108,6 +109,11 @@ fn topbar(ctx: &Ctx, header: &Header) -> Markup {
         }
         @if !ctx.admin { (unlock_popover(ctx)) }
     }
+}
+
+/// Opens the Player PWA.
+fn player_button() -> Markup {
+    html! { a.btn.small.caps.player-link href="/player/" { "▶ Player" } }
 }
 
 fn librarian_button(ctx: &Ctx) -> Markup {
@@ -166,6 +172,7 @@ fn compact_head(ctx: &Ctx, search: Option<&String>) -> Markup {
                 }
             }
             div.admin-tools {
+                (player_button())
                 @if ctx.admin {
                     span.badge-admin { "● Librarian" }
                     // Admin pages have their own buttons; don't repeat it here.

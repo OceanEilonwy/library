@@ -1,0 +1,30 @@
+# The Library — a development config that never touches real data.
+#
+#   cargo run -- --config library.dev.toml serve
+#   scripts/dev-seed.sh            # fills ./data-dev with demo items and accounts
+#
+# The admin password is "librarian". Everything lives in ./data-dev
+# (gitignored); delete that folder to start again.
+
+# Not 8080, so it can run beside a real library on the default port.
+listen = "127.0.0.1:8090"
+data_dir = "./data-dev"
+default_title = "The Library (dev)"
+
+# The password "librarian", made with `library hash-password`.
+admin_password_hash = "$argon2id$v=19$m=19456,t=2,p=1$ixuLexE66OMO5deZ18kDOA$zM3BsRH54lPgODZox/FF2pNSsGzB3WmdGrrTbVQ34Xs"
+
+[semantic]
+# Off in development: no model download.
+enabled = false
+
+[lookup]
+# Off in development: no calls to outside services.
+enabled = false
+
+[accounts]
+default_access = "child"
+open_registration = true
+
+[media]
+max_upload_mb = 2000

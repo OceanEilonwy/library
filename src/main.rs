@@ -2,11 +2,14 @@
 
 mod config;
 mod db;
+mod digital;
 mod dupes;
 mod embed;
 mod lookup;
 mod media;
+mod musicbrainz;
 mod search;
+mod trackmatch;
 mod util;
 mod views;
 mod web;
@@ -60,6 +63,25 @@ enum Command {
     Backup { dest: PathBuf },
     /// Download the embedding model now (instead of on first start).
     FetchModel,
+    /// Make a Player account, already approved (prompts for its password,
+    /// or reads LIBRARY_ACCOUNT_PASSWORD).
+    CreateAccount {
+        username: String,
+        email: String,
+        /// Let the account see items marked restricted (adults only).
+        #[arg(long)]
+        adult: bool,
+    },
+    /// Change a Player account's access: child or adult.
+    SetAccess { username: String, access: String },
+    /// Approve a Player account that is waiting, so it can sign in.
+    ApproveAccount {
+        username: String,
+        /// Give it adult access (otherwise it keeps the access it asked
+        /// with, which is `[accounts] default_access`).
+        #[arg(long)]
+        adult: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -98,6 +120,22 @@ fn main() -> Result<()> {
             db.read_blocking(|c| db::backup(c, &dest))?;
             println!("Backed up to {}", dest.display());
             Ok(())
+        }
+        Command::CreateAccount {
+            username,
+            email,
+            adult,
+        } => {
+            let cfg = Config::load(&cli.config)?;
+            create_account(&cfg, &username, &email, adult)
+        }
+        Command::SetAccess { username, access } => {
+            let cfg = Config::load(&cli.config)?;
+            set_access(&cfg, &username, &access)
+        }
+        Command::ApproveAccount { username, adult } => {
+            let cfg = Config::load(&cli.config)?;
+            approve_account(&cfg, &username, adult)
         }
         Command::FetchModel => {
             let cfg = Config::load(&cli.config)?;
@@ -145,6 +183,93 @@ fn hash_password(stdin: bool) -> Result<()> {
     Ok(())
 }
 
+/// Makes an account as the librarian: it is approved straight away.
+fn make_account(
+    db: &Db,
+    username: &str,
+    email: &str,
+    password: &str,
+    adult: bool,
+) -> Result<db::accounts::Account> {
+    use db::accounts::{self, Access, Status};
+    let bad = accounts::validate(username, email, password);
+    if !bad.is_empty() {
+        anyhow::bail!("{bad}");
+    }
+    let hash = web::auth::hash_password(password)?;
+    let access = if adult { Access::Adult } else { Access::Child };
+    db.write_blocking(|c| accounts::create(c, username, email, &hash, access, Status::Approved))
+}
+
+fn create_account(cfg: &Config, username: &str, email: &str, adult: bool) -> Result<()> {
+    let password = match std::env::var("LIBRARY_ACCOUNT_PASSWORD") {
+        Ok(p) if !p.is_empty() => p,
+        _ => {
+            let pw = rpassword::prompt_password(format!("Password for {username}: "))?;
+            let again = rpassword::prompt_password("Again: ")?;
+            if pw != again {
+                anyhow::bail!("The two passwords differ.");
+            }
+            pw
+        }
+    };
+    let db = Db::open(&cfg.db_path())?;
+    let account = make_account(&db, username, email, &password, adult)?;
+    println!(
+        "Made the account {} ({}), access: {}.",
+        account.username,
+        account.email,
+        account.access.as_str()
+    );
+    Ok(())
+}
+
+fn set_access(cfg: &Config, username: &str, access: &str) -> Result<()> {
+    use db::accounts::{self, Access};
+    let access =
+        Access::parse(access).ok_or_else(|| anyhow::anyhow!("Access should be child or adult."))?;
+    let db = Db::open(&cfg.db_path())?;
+    let account = db
+        .read_blocking(|c| accounts::by_username(c, username))?
+        .ok_or_else(|| anyhow::anyhow!("There is no account called {username}."))?;
+    db.write_blocking(|c| accounts::set_access(c, account.id, access))?;
+    println!("{} now has {} access.", account.username, access.as_str());
+    Ok(())
+}
+
+/// Approves a waiting account; false if it was approved already.
+fn approve(db: &Db, username: &str, adult: bool) -> Result<(db::accounts::Account, bool)> {
+    use db::accounts::{self, Access};
+    let account = db
+        .read_blocking(|c| accounts::by_username(c, username))?
+        .ok_or_else(|| anyhow::anyhow!("There is no account called {username}."))?;
+    if account.approved() {
+        return Ok((account, false));
+    }
+    let access = if adult { Access::Adult } else { account.access };
+    let id = account.id;
+    db.write_blocking(|c| accounts::approve(c, id, access))?;
+    let account = db
+        .read_blocking(|c| accounts::get(c, id))?
+        .ok_or_else(|| anyhow::anyhow!("The account {username} vanished."))?;
+    Ok((account, true))
+}
+
+fn approve_account(cfg: &Config, username: &str, adult: bool) -> Result<()> {
+    let db = Db::open(&cfg.db_path())?;
+    let (account, changed) = approve(&db, username, adult)?;
+    if changed {
+        println!(
+            "Approved {} with {} access. They can sign in now.",
+            account.username,
+            account.access.as_str()
+        );
+    } else {
+        println!("{} is already approved.", account.username);
+    }
+    Ok(())
+}
+
 fn reindex(cfg: Config) -> Result<()> {
     let db = Db::open(&cfg.db_path())?;
     let n = db.write_blocking(|c| {
@@ -176,6 +301,7 @@ async fn serve(cfg: Config) -> Result<()> {
     std::fs::create_dir_all(&cfg.data_dir)
         .with_context(|| format!("creating {}", cfg.data_dir.display()))?;
     std::fs::create_dir_all(cfg.photos_dir())?;
+    std::fs::create_dir_all(cfg.media_dir())?;
     let db = Db::open(&cfg.db_path())?;
     let key = web::auth::Auth::load_or_create_key(&cfg.secret_path())?;
     let password_hash = match (&cfg.admin_password_hash, &cfg.admin_password) {
@@ -233,6 +359,7 @@ async fn serve(cfg: Config) -> Result<()> {
         lookups,
         candidates: Arc::new(lookup::CandidateCache::default()),
         auth: Arc::new(auth),
+        throttles: Arc::new(web::accounts::Throttles::default()),
     };
     let app = web::router(state);
     let listener = tokio::net::TcpListener::bind(cfg.listen)
@@ -243,4 +370,52 @@ async fn serve(cfg: Config) -> Result<()> {
         .with_graceful_shutdown(web::shutdown_signal())
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use db::accounts::{self, Access, Status};
+
+    #[test]
+    fn cli_accounts_are_approved() {
+        let (db, _dir) = db::testing::temp_db();
+        let a = make_account(&db, "admin", "admin@example.org", "long enough", true).unwrap();
+        assert!(a.approved() && a.access == Access::Adult);
+        let k = make_account(&db, "kid", "kid@example.org", "long enough", false).unwrap();
+        assert!(k.approved() && k.access == Access::Child);
+        assert!(make_account(&db, "x", "nope", "short", false).is_err());
+    }
+
+    #[test]
+    fn cli_approves_waiting_accounts() {
+        let (db, _dir) = db::testing::temp_db();
+        db.write_blocking(|c| {
+            accounts::create(
+                c,
+                "newbie",
+                "n@example.org",
+                "h",
+                Access::Child,
+                Status::Pending,
+            )?;
+            accounts::create(
+                c,
+                "other",
+                "o@example.org",
+                "h",
+                Access::Child,
+                Status::Pending,
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let (a, changed) = approve(&db, "newbie", false).unwrap();
+        assert!(changed && a.approved() && a.access == Access::Child);
+        let (_, changed) = approve(&db, "NEWBIE", true).unwrap();
+        assert!(!changed, "already approved");
+        let (o, _) = approve(&db, "other", true).unwrap();
+        assert!(o.approved() && o.access == Access::Adult);
+        assert!(approve(&db, "nobody", false).is_err());
+    }
 }

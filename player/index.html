@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en-GB">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Library Player</title>
+    <meta name="description" content="Listen to, watch and read the library's digital copies, online or off." />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#e9ebe3" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#101613" media="(prefers-color-scheme: dark)" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Player" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <audio id="player-audio" preload="auto"></audio>
+    <noscript
+      >The Player needs JavaScript. You can still browse the catalogue at
+      <a href="/">the library's front page</a>.</noscript
+    >
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

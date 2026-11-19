@@ -23,8 +23,12 @@ struct App {
 const PASSWORD: &str = "correct horse battery";
 
 fn app() -> App {
+    app_with(|_| {})
+}
+
+fn app_with(tweak: impl FnOnce(&mut Config)) -> App {
     let dir = tempfile::tempdir().unwrap();
-    let cfg = Config {
+    let mut cfg = Config {
         data_dir: dir.path().to_owned(),
         default_title: "Tallow Lane Library".into(),
         lookup: LookupConfig {
@@ -33,6 +37,7 @@ fn app() -> App {
         },
         ..Default::default()
     };
+    tweak(&mut cfg);
     let db = Db::open(&cfg.db_path()).unwrap();
     let auth = Auth::new([3u8; 32], Some(hash_password(PASSWORD).unwrap()));
     let Login::Ok(cookie) = auth.login(PASSWORD) else {
@@ -753,4 +758,47 @@ async fn missing_things_are_404() {
         StatusCode::NOT_FOUND
     );
     assert_eq!(a.get("/nowhere", false).await.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn optional_site_password_guards_every_page_but_health() {
+    use base64::Engine;
+    let a = app_with(|c| c.site_password = Some("family only".into()));
+    let r = a.get("/", false).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    assert!(
+        r.headers
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("Basic")
+    );
+    assert_eq!(a.get("/healthz", false).await.status, StatusCode::OK);
+    let auth = |pw: &str| {
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("anyone:{pw}"))
+        )
+    };
+    let ok = a
+        .send(
+            Request::get("/")
+                .header(header::AUTHORIZATION, auth("family only"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(ok.status, StatusCode::OK);
+    let bad = a
+        .send(
+            Request::get("/search")
+                .header(header::AUTHORIZATION, auth("guess"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::UNAUTHORIZED);
+    // Without a site password nothing is asked.
+    assert_eq!(app().get("/", false).await.status, StatusCode::OK);
 }

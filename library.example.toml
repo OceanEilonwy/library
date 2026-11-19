@@ -13,6 +13,10 @@ default_title = "The Library"
 # Run `library hash-password` and paste the line it prints here.
 # admin_password_hash = "$argon2id$v=19$..."
 
+# Optional: ask for this password before showing any page (HTTP basic auth,
+# any user name). Use it when nothing in front of the library does that.
+# site_password = ""
+
 # Hand-drawn art. Defaults to <data_dir>/art. See README for file names.
 # art_dir = "/var/lib/library/art"
 

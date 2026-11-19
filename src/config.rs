@@ -19,6 +19,13 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// Argon2 PHC hash of the admin password (`library hash-password`).
     pub admin_password_hash: Option<String>,
+    /// The admin password itself, hashed at startup. Only from the environment
+    /// (`LIBRARY_ADMIN_PASSWORD`), for hosts that hand settings over that way.
+    #[serde(skip)]
+    pub admin_password: Option<String>,
+    /// When set, every page asks for this password first (HTTP basic auth,
+    /// any user name). For hosts without a reverse proxy doing that.
+    pub site_password: Option<String>,
     /// Library title shown until it is changed on the settings page.
     pub default_title: String,
     /// Directory holding hand-drawn art (hero.png, margin-left.png, …).
@@ -64,6 +71,8 @@ impl Default for Config {
             listen: "127.0.0.1:8080".parse().expect("static address"),
             data_dir: PathBuf::from("data"),
             admin_password_hash: None,
+            admin_password: None,
+            site_password: None,
             default_title: "The Library".into(),
             art_dir: None,
             semantic: SemanticConfig::default(),
@@ -99,22 +108,61 @@ impl Default for LookupConfig {
 }
 
 impl Config {
+    /// Reads the config file (defaults if it doesn't exist), then applies
+    /// `LIBRARY_*` environment variables on top.
     pub fn load(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            tracing::warn!(path = %path.display(), "config file not found, using defaults");
-            return Ok(Self::default());
-        }
-        let text =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        Self::parse(&text).with_context(|| format!("parsing {}", path.display()))
+        let mut cfg = if path.exists() {
+            let text = std::fs::read_to_string(path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            Self::parse(&text).with_context(|| format!("parsing {}", path.display()))?
+        } else {
+            tracing::info!(path = %path.display(), "no config file, using defaults");
+            Self::default()
+        };
+        cfg.apply_env(|k| std::env::var(k).ok());
+        Ok(cfg)
     }
 
     pub fn parse(text: &str) -> Result<Self> {
-        let mut cfg: Config = toml::from_str(text)?;
-        if let Ok(hash) = std::env::var("LIBRARY_ADMIN_PASSWORD_HASH") {
-            cfg.admin_password_hash = Some(hash);
+        Ok(toml::from_str(text)?)
+    }
+
+    /// Overrides from the environment (empty values are ignored):
+    /// `LIBRARY_ADMIN_PASSWORD_HASH`, `LIBRARY_ADMIN_PASSWORD`, `LIBRARY_SITE_PASSWORD`,
+    /// `LIBRARY_TITLE`, `LIBRARY_TMDB_TOKEN`, `LIBRARY_LOOKUP_CONTACT`,
+    /// `LIBRARY_SEMANTIC` and `LIBRARY_LOOKUPS` (on/off).
+    pub fn apply_env(&mut self, get: impl Fn(&str) -> Option<String>) {
+        let get = |k: &str| get(k).filter(|v| !v.trim().is_empty());
+        let flag = |v: String| {
+            !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "off" | "false" | "no"
+            )
+        };
+        if let Some(v) = get("LIBRARY_ADMIN_PASSWORD_HASH") {
+            self.admin_password_hash = Some(v);
         }
-        Ok(cfg)
+        if let Some(v) = get("LIBRARY_ADMIN_PASSWORD") {
+            self.admin_password = Some(v);
+        }
+        if let Some(v) = get("LIBRARY_SITE_PASSWORD") {
+            self.site_password = Some(v);
+        }
+        if let Some(v) = get("LIBRARY_TITLE") {
+            self.default_title = v;
+        }
+        if let Some(v) = get("LIBRARY_TMDB_TOKEN") {
+            self.lookup.tmdb_token = Some(v);
+        }
+        if let Some(v) = get("LIBRARY_LOOKUP_CONTACT") {
+            self.lookup.contact = Some(v);
+        }
+        if let Some(v) = get("LIBRARY_SEMANTIC") {
+            self.semantic.enabled = flag(v);
+        }
+        if let Some(v) = get("LIBRARY_LOOKUPS") {
+            self.lookup.enabled = flag(v);
+        }
     }
 
     pub fn db_path(&self) -> PathBuf {
@@ -172,6 +220,34 @@ mod tests {
         assert_eq!(cfg.lookup.tmdb_token.as_deref(), Some("abc"));
         assert_eq!(cfg.lookup.timeout_secs, 15);
         assert_eq!(cfg.default_title, "Tallow Lane");
+    }
+
+    #[test]
+    fn environment_overrides() {
+        let mut cfg = Config::parse("site_password = \"from-file\"").unwrap();
+        let env: std::collections::HashMap<&str, &str> = [
+            ("LIBRARY_ADMIN_PASSWORD", "hunter22"),
+            ("LIBRARY_TITLE", "Hollingworth Library"),
+            ("LIBRARY_SEMANTIC", "off"),
+            ("LIBRARY_LOOKUPS", "on"),
+            ("LIBRARY_TMDB_TOKEN", " "),
+        ]
+        .into();
+        cfg.apply_env(|k| env.get(k).map(|v| v.to_string()));
+        assert_eq!(cfg.admin_password.as_deref(), Some("hunter22"));
+        assert_eq!(
+            cfg.site_password.as_deref(),
+            Some("from-file"),
+            "unset keeps the file's value"
+        );
+        assert_eq!(cfg.default_title, "Hollingworth Library");
+        assert!(!cfg.semantic.enabled);
+        assert!(cfg.lookup.enabled);
+        assert_eq!(cfg.lookup.tmdb_token, None, "blank values are ignored");
+        assert!(
+            Config::parse("admin_password = \"x\"").is_err(),
+            "plain passwords only from the environment"
+        );
     }
 
     #[test]

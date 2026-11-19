@@ -40,7 +40,14 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Run the web server (the default).
-    Serve,
+    Serve {
+        /// Address to listen on, overriding the config file.
+        #[arg(long)]
+        listen: Option<std::net::SocketAddr>,
+        /// Data directory, overriding the config file.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
     /// Hash an admin password for the config file.
     HashPassword {
         /// Read the password from standard input instead of prompting.
@@ -63,10 +70,19 @@ fn main() -> Result<()> {
         )
         .init();
     let cli = Cli::parse();
-    match cli.command.unwrap_or(Command::Serve) {
+    match cli.command.unwrap_or(Command::Serve {
+        listen: None,
+        data_dir: None,
+    }) {
         Command::HashPassword { stdin } => hash_password(stdin),
-        Command::Serve => {
-            let cfg = Config::load(&cli.config)?;
+        Command::Serve { listen, data_dir } => {
+            let mut cfg = Config::load(&cli.config)?;
+            if let Some(l) = listen {
+                cfg.listen = l;
+            }
+            if let Some(d) = data_dir {
+                cfg.data_dir = d;
+            }
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?
@@ -162,12 +178,17 @@ async fn serve(cfg: Config) -> Result<()> {
     std::fs::create_dir_all(cfg.photos_dir())?;
     let db = Db::open(&cfg.db_path())?;
     let key = web::auth::Auth::load_or_create_key(&cfg.secret_path())?;
-    if cfg.admin_password_hash.is_none() {
-        tracing::warn!(
-            "no admin_password_hash in the config: editing is disabled (run `library hash-password`)"
-        );
-    }
-    let auth = web::auth::Auth::new(key, cfg.admin_password_hash.clone());
+    let password_hash = match (&cfg.admin_password_hash, &cfg.admin_password) {
+        (Some(h), _) => Some(h.clone()),
+        (None, Some(plain)) => Some(web::auth::hash_password(plain)?),
+        (None, None) => {
+            tracing::warn!(
+                "no admin password configured: editing is disabled (run `library hash-password`)"
+            );
+            None
+        }
+    };
+    let auth = web::auth::Auth::new(key, password_hash);
     let lookups = lookup::Lookups::new(cfg.lookup.clone())?;
     let semantic = Semantic::disabled();
     let cfg = Arc::new(cfg);

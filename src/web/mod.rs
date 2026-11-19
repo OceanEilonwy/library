@@ -89,6 +89,7 @@ pub fn router(state: AppState) -> Router {
         .merge(admin)
         .layer(DefaultBodyLimit::max(64 << 10))
         .layer(middleware::from_fn(same_origin))
+        .layer(middleware::from_fn_with_state(state.clone(), site_password))
         .layer(middleware::from_fn(security_headers))
         .layer(CompressionLayer::new())
         .with_state(state)
@@ -356,6 +357,54 @@ async fn security_headers(req: Request, next: Next) -> Response {
         h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     }
     res
+}
+
+/// The optional site password: when configured, every request but the
+/// health check needs HTTP basic auth with that password (any user name).
+async fn site_password(State(st): State<AppState>, req: Request, next: Next) -> Response {
+    let Some(expected) = st.cfg.site_password.as_deref() else {
+        return next.run(req).await;
+    };
+    if req.uri().path() == "/healthz" || basic_auth_ok(req.headers(), expected) {
+        return next.run(req).await;
+    }
+    (
+        StatusCode::UNAUTHORIZED,
+        [(
+            header::WWW_AUTHENTICATE,
+            "Basic realm=\"Library\", charset=\"UTF-8\"",
+        )],
+        "This library is private. Enter the site password.",
+    )
+        .into_response()
+}
+
+fn basic_auth_ok(h: &HeaderMap, expected: &str) -> bool {
+    use base64::Engine;
+    use subtle::ConstantTimeEq;
+    let Some(encoded) = h
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.strip_prefix("Basic ")
+                .or_else(|| v.strip_prefix("basic "))
+        })
+    else {
+        return false;
+    };
+    let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded.trim()) else {
+        return false;
+    };
+    let Ok(text) = String::from_utf8(decoded) else {
+        return false;
+    };
+    let Some((_, password)) = text.split_once(':') else {
+        return false;
+    };
+    // Compare digests so the check takes the same time whatever the length.
+    Sha256::digest(password.as_bytes())
+        .ct_eq(&Sha256::digest(expected.as_bytes()))
+        .into()
 }
 
 /// Rejects state-changing requests from other sites (CSRF). Browsers send

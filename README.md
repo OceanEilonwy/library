@@ -48,6 +48,16 @@ sudo systemctl enable --now library
 # then adapt deploy/Caddyfile (domain + `caddy hash-password` output)
 ```
 
+Without a reverse proxy doing basic auth, set `site_password` in the config
+and the library asks for it itself (any user name works).
+
+Settings can also come from the environment, which overrides the file:
+`LIBRARY_ADMIN_PASSWORD` (plain; hashed at startup), `LIBRARY_ADMIN_PASSWORD_HASH`,
+`LIBRARY_SITE_PASSWORD`, `LIBRARY_TITLE`, `LIBRARY_TMDB_TOKEN`,
+`LIBRARY_LOOKUP_CONTACT`, `LIBRARY_SEMANTIC` and `LIBRARY_LOOKUPS` (`on`/`off`);
+and `library serve --listen 127.0.0.1:9000 --data-dir /path` overrides those two.
+The monokulo-nodo package uses these.
+
 If you use nginx instead of Caddy, pass the original host through
 (`proxy_set_header Host $host; proxy_set_header X-Forwarded-Proto $scheme;`):
 the app refuses form posts whose `Origin` doesn't match the host.

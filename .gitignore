@@ -6,3 +6,4 @@ library.toml
 /player/node_modules
 /data-dev
 /rip/target*
+/downloads/

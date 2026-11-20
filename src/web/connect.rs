@@ -250,29 +250,29 @@ fn is_build(name: &str) -> bool {
         .any(|ext| lower.ends_with(ext))
 }
 
-/// The builds in the downloads folder, with sizes and SHA-256s.
+/// The builds in the downloads folders, with sizes and SHA-256s.
 async fn builds(st: &AppState) -> Vec<Build> {
-    let dir = st.cfg.ripper_downloads_dir();
     let mut found: Vec<(String, PathBuf, u64, std::time::SystemTime)> = Vec::new();
-    let mut entries = match tokio::fs::read_dir(&dir).await {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
-    };
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let Ok(name) = entry.file_name().into_string() else {
+    for dir in st.cfg.ripper_download_dirs() {
+        let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
             continue;
         };
-        if !is_build(&name) {
-            continue;
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            if !is_build(&name) || found.iter().any(|f| f.0 == name) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata().await else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+            found.push((name, entry.path(), meta.len(), modified));
         }
-        let Ok(meta) = entry.metadata().await else {
-            continue;
-        };
-        if !meta.is_file() {
-            continue;
-        }
-        let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
-        found.push((name, entry.path(), meta.len(), modified));
     }
     found.sort_by(|a, b| a.0.cmp(&b.0));
     let mut out = Vec::with_capacity(found.len());
@@ -316,11 +316,17 @@ pub async fn download(
     if !is_build(&file) {
         return AppError::NotFound.into_response();
     }
-    let path = st.cfg.ripper_downloads_dir().join(&file);
-    match tokio::fs::metadata(&path).await {
-        Ok(m) if m.is_file() => {}
-        _ => return AppError::NotFound.into_response(),
+    let mut found = None;
+    for dir in st.cfg.ripper_download_dirs() {
+        let path = dir.join(&file);
+        if matches!(tokio::fs::metadata(&path).await, Ok(m) if m.is_file()) {
+            found = Some(path);
+            break;
+        }
     }
+    let Some(path) = found else {
+        return AppError::NotFound.into_response();
+    };
     let mut res =
         super::stream::serve_file(&path, "application/octet-stream", &file, &headers).await;
     super::stream::make_attachment(&mut res, &file);

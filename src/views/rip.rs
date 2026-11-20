@@ -291,7 +291,8 @@ pub fn ripper_page(ctx: &Ctx, v: &RipperView) -> Markup {
                     h2 #builds-title .kicker { "Download" }
                     @if v.builds.is_empty() {
                         p.muted {
-                            "No builds have been put here yet. The librarian can copy them into the "
+                            "This copy of the library came without a Library Rip build. Run "
+                            span.mono { "scripts/bundle-rip.sh" } " to add one, or copy builds into the "
                             span.mono { "downloads/library-rip" } " folder of the library's data folder "
                             "(or the folder set by " span.mono { "[ripper] downloads_dir" } ")."
                         }

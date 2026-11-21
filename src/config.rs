@@ -273,14 +273,20 @@ impl Config {
     /// file name appears twice.
     pub fn ripper_download_dirs(&self) -> Vec<PathBuf> {
         let mut dirs = vec![self.ripper_downloads_dir()];
-        if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)) {
+        if let Some(exe_dir) = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(PathBuf::from))
+        {
             dirs.push(exe_dir.join("downloads").join("library-rip"));
         }
-        dirs.push(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("downloads")
-                .join("library-rip"),
-        );
+        // The source tree (for `cargo run`); tests must not depend on it.
+        if !cfg!(test) {
+            dirs.push(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("downloads")
+                    .join("library-rip"),
+            );
+        }
         let mut seen = Vec::new();
         dirs.retain(|d| {
             let fresh = !seen.contains(d);

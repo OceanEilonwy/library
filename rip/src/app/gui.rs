@@ -143,6 +143,12 @@ fn connect_callbacks(window: &MainWindow, sender: &EventSender) {
     ));
     forward!(on_item_chosen, |value| Event::ItemChosen(index(value)));
     forward!(on_rip, || Event::RipPressed);
+    forward!(on_film_title_toggled, |value| Event::FilmTitleToggled(
+        index(value)
+    ));
+    forward!(on_film_viewing_copy_toggled, || {
+        Event::FilmViewingCopyToggled
+    });
     forward!(on_upload_anyway, || Event::UploadAnywayPressed);
     forward!(on_rip_again, || Event::RipAgainPressed);
     forward!(on_back_to_disc, || Event::BackToDiscPressed);
@@ -297,6 +303,22 @@ fn apply(window: &MainWindow, view: ViewModel) {
     });
     window.set_item_index(view.item_index);
     window.set_can_rip(view.can_rip);
+    window.set_film_mode(view.film_mode);
+    window.set_film_notice(text(&view.film_notice));
+    let titles: Vec<UiTitle> = view
+        .film_titles
+        .iter()
+        .map(|row| UiTitle {
+            title: text(&row.title),
+            detail: text(&row.detail),
+            selected: row.selected,
+        })
+        .collect();
+    sync(window.get_film_titles(), titles, |m| {
+        window.set_film_titles(m)
+    });
+    window.set_film_can_choose_copy(view.film_can_choose_copy);
+    window.set_film_viewing_copy(view.film_viewing_copy);
 
     // Rip
     window.set_rip_title(text(&view.rip_title));

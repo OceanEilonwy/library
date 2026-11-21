@@ -16,11 +16,12 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use url::Url;
 
+use super::film::{FilmJob, FilmOutput, FilmScan};
 use super::pipeline::{RipOutput, UploadOutput};
 use super::settings::Settings;
 use super::state::{AppState, Command, ConnectMethod, Event, RipJob, Task};
 use super::{AppError, Result};
-use crate::drive::DriveDescriptor;
+use crate::drive::{DriveDescriptor, DriveError};
 use crate::library::api::{ItemSummary, WhoAmI};
 use crate::model::{DiscInfo, ReleaseMetadata, Toc, UploadPlan};
 use crate::musicbrainz::ReleaseCandidate;
@@ -75,6 +76,38 @@ pub trait Backend: Send + Sync + 'static {
 
     /// Reads the disc in `device`.
     fn read_disc(&self, device: String) -> impl Future<Output = Result<DiscInfo>> + Send;
+
+    /// Whether film discs can be ripped (MakeMKV is looked for when the disc
+    /// turns out to have no music). Backends that cannot leave this false.
+    fn film_supported(&self) -> bool {
+        false
+    }
+
+    /// Asks MakeMKV about the film disc in `device`.
+    fn scan_film(&self, device: String) -> impl Future<Output = Result<FilmScan>> + Send {
+        let _ = device;
+        async {
+            Err(AppError::Task(
+                "film discs are not supported here".to_owned(),
+            ))
+        }
+    }
+
+    /// Copies film titles and makes viewing copies, reporting
+    /// [`Event::FilmProgress`].
+    fn rip_film(
+        &self,
+        job: FilmJob,
+        events: EventSender,
+        cancel: Arc<AtomicBool>,
+    ) -> impl Future<Output = Result<FilmOutput>> + Send {
+        let _ = (job, events, cancel);
+        async {
+            Err(AppError::Task(
+                "film discs are not supported here".to_owned(),
+            ))
+        }
+    }
 
     /// MusicBrainz releases matching the disc.
     fn find_releases(
@@ -234,10 +267,18 @@ impl<B: Backend> Controller<B> {
                 backend.list_drives().await.map(Event::DrivesListed)
             }),
             Command::ReadDisc { device } => self.spawn(Task::Disc, None, async move {
-                backend
-                    .read_disc(device)
-                    .await
-                    .map(|disc| Event::DiscDetected(Box::new(disc)))
+                match backend.read_disc(device.clone()).await {
+                    Ok(disc) => Ok(Event::DiscDetected(Box::new(disc))),
+                    // No music on it: a film disc, if this backend does those.
+                    Err(AppError::Drive(DriveError::NoAudio)) if backend.film_supported() => {
+                        events.send(Event::FilmScanning);
+                        backend
+                            .scan_film(device)
+                            .await
+                            .map(|scan| Event::FilmDetected(Box::new(scan)))
+                    }
+                    Err(error) => Err(error),
+                }
             }),
             Command::FindReleases { disc } => self.spawn(Task::Releases, None, async move {
                 backend
@@ -270,6 +311,16 @@ impl<B: Backend> Controller<B> {
                         .rip(*job, events, flag)
                         .await
                         .map(|output| Event::RipFinished(Box::new(output)))
+                });
+            }
+            Command::StartFilmRip(job) => {
+                let cancel = Arc::new(AtomicBool::new(false));
+                let flag = Arc::clone(&cancel);
+                self.spawn(Task::Rip, Some(cancel), async move {
+                    backend
+                        .rip_film(*job, events, flag)
+                        .await
+                        .map(|output| Event::FilmRipped(Box::new(output)))
                 });
             }
             Command::StartUpload { plan, folder } => {
@@ -391,6 +442,8 @@ mod tests {
         saved: Option<String>,
         restore_fails: bool,
         rip_waits_for_cancel: bool,
+        /// The disc is a film disc, and the backend does those.
+        film: bool,
         upload_fails_once: Mutex<bool>,
         calls: Mutex<Vec<String>>,
         saved_settings: Mutex<Vec<Settings>>,
@@ -524,7 +577,59 @@ mod tests {
         }
         async fn read_disc(&self, device: String) -> Result<DiscInfo> {
             self.record(format!("read {device}"));
+            if self.film {
+                return Err(AppError::Drive(DriveError::NoAudio));
+            }
             Ok(disc())
+        }
+        fn film_supported(&self) -> bool {
+            self.film
+        }
+        async fn scan_film(&self, device: String) -> Result<FilmScan> {
+            self.record(format!("scan {device}"));
+            Ok(FilmScan {
+                disc_index: 0,
+                drive_name: "Mock DVD".into(),
+                disc: crate::video::scan::DiscScan::from_lines(
+                    include_str!("../../tests/data/makemkv-info-dvd.txt").lines(),
+                ),
+                viewing: crate::app::film::ViewingSupport::Available {
+                    encoder: "libsvtav1".into(),
+                },
+            })
+        }
+        async fn rip_film(
+            &self,
+            job: FilmJob,
+            events: EventSender,
+            _cancel: Arc<AtomicBool>,
+        ) -> Result<FilmOutput> {
+            self.record(format!("film {} titles {}", job.name, job.titles.len()));
+            events.send(Event::FilmProgress(crate::app::film::FilmEvent::Finished {
+                title: job.titles[0].id,
+            }));
+            Ok(FilmOutput {
+                folder: PathBuf::from("/tmp/film"),
+                kept: None,
+                plan: UploadPlan {
+                    item: ItemTarget::New(crate::model::NewItem {
+                        type_slug: "film".into(),
+                        title: job.name.clone(),
+                        ..crate::model::NewItem::default()
+                    }),
+                    cover: None,
+                    files: vec![UploadFile {
+                        kind: MediaKind::Video,
+                        title: job.name,
+                        disc: 1,
+                        track: None,
+                        duration_ms: Some(1000),
+                        sha256: Sha256Digest([3; 32]),
+                        path: PathBuf::from("/tmp/film/a.webm"),
+                    }],
+                },
+                notes: Vec::new(),
+            })
         }
         async fn find_releases(&self, _disc: DiscInfo) -> Result<Vec<ReleaseCandidate>> {
             Err(crate::musicbrainz::MusicBrainzError::Busy.into())
@@ -659,6 +764,116 @@ mod tests {
         assert!(calls.iter().any(|c| c.starts_with("upload New(")));
         assert!(calls.contains(&"eject sim".to_owned()));
         assert!(calls.contains(&"open http://library.test/items/3".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn a_disc_with_no_music_is_asked_about_as_a_film_and_ripped() {
+        let mut controller = Controller::new(Mock {
+            saved: Some("http://library.test/".into()),
+            film: true,
+            ..Mock::default()
+        });
+        let sender = controller.sender();
+        settle(&mut controller, |s| s.film.is_some()).await;
+        // No MusicBrainz, no "no music" banner: the film's name is ready.
+        assert_eq!(controller.state().release.title, "The Library Card");
+        assert!(controller.state().problem.is_none());
+        assert_eq!(controller.state().disc_phase, DiscPhase::Ready);
+
+        sender.send(Event::RipPressed);
+        settle(&mut controller, |s| s.screen == Screen::Done).await;
+        let calls = controller.backend().calls();
+        assert!(calls.contains(&"scan sim".to_owned()), "{calls:?}");
+        assert!(calls.contains(&"film The Library Card titles 1".to_owned()));
+        assert!(calls.iter().any(|c| c.starts_with("upload New(")));
+        assert_eq!(
+            controller.state().done.as_ref().unwrap().item_url,
+            "http://library.test/items/3"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_backend_without_films_still_says_there_is_no_music() {
+        struct NoFilms;
+        impl Backend for NoFilms {
+            fn settings(&self) -> Settings {
+                Settings::default()
+            }
+            fn saved_address(&self) -> Option<String> {
+                Some("http://library.test/".into())
+            }
+            async fn restore(&self) -> Result<WhoAmI> {
+                Ok(who())
+            }
+            async fn connect(&self, _: Url, _: ConnectMethod, _: EventSender) -> Result<WhoAmI> {
+                Ok(who())
+            }
+            async fn disconnect(&self) -> Result<()> {
+                Ok(())
+            }
+            async fn list_drives(&self) -> Result<Vec<DriveDescriptor>> {
+                Ok(vec![DriveDescriptor {
+                    device: "sim".into(),
+                    label: "Sim".into(),
+                }])
+            }
+            async fn read_disc(&self, _: String) -> Result<DiscInfo> {
+                Err(AppError::Drive(DriveError::NoAudio))
+            }
+            async fn find_releases(&self, _: DiscInfo) -> Result<Vec<ReleaseCandidate>> {
+                Ok(Vec::new())
+            }
+            async fn search_releases(&self, _: String) -> Result<Vec<ReleaseCandidate>> {
+                Ok(Vec::new())
+            }
+            async fn load_release(&self, _: ReleaseCandidate, _: Toc) -> Result<ReleaseMetadata> {
+                Ok(ReleaseMetadata::default())
+            }
+            async fn search_items(&self, _: String) -> Result<Vec<ItemSummary>> {
+                Ok(Vec::new())
+            }
+            async fn rip(
+                &self,
+                _: RipJob,
+                _: EventSender,
+                _: Arc<AtomicBool>,
+            ) -> Result<RipOutput> {
+                Err(AppError::Cancelled)
+            }
+            async fn upload(
+                &self,
+                _: UploadPlan,
+                _: PathBuf,
+                _: EventSender,
+                _: Arc<AtomicBool>,
+            ) -> Result<UploadOutput> {
+                Err(AppError::Cancelled)
+            }
+            async fn eject(&self, _: String) -> Result<()> {
+                Ok(())
+            }
+            async fn save_settings(&self, _: Settings) -> Result<()> {
+                Ok(())
+            }
+            async fn pick_folder(&self) -> Option<PathBuf> {
+                None
+            }
+            async fn open_url(&self, _: String) -> Result<()> {
+                Ok(())
+            }
+        }
+        let mut controller = Controller::new(NoFilms);
+        settle(&mut controller, |s| s.disc_phase == DiscPhase::Empty).await;
+        assert!(controller.state().film.is_none());
+        assert!(
+            controller
+                .state()
+                .problem
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("no music")
+        );
     }
 
     #[tokio::test]

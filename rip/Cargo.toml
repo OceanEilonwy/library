@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 [package]
 name = "library-rip"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 license = "AGPL-3.0-or-later"
@@ -60,6 +60,9 @@ url = { version = "2", features = ["serde"] }
 [build-dependencies]
 pkg-config = "0.3"
 slint-build = "1.19"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 axum = { version = "0.8", features = ["multipart", "macros"] }

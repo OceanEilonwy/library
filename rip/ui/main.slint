@@ -16,6 +16,12 @@ export struct UiChoice {
     detail: string,
 }
 
+export struct UiTitle {
+    title: string,
+    detail: string,
+    selected: bool,
+}
+
 export struct UiTrack {
     number: string,
     title: string,
@@ -457,6 +463,12 @@ export component MainWindow inherits Window {
     in property <[UiChoice]> items;
     in property <int> item-index: -1;
     in property <bool> can-rip;
+    // A film disc (DVD, Blu-ray) instead of an audio CD.
+    in property <bool> film-mode;
+    in property <string> film-notice;
+    in property <[UiTitle]> film-titles;
+    in property <bool> film-can-choose-copy;
+    in property <bool> film-viewing-copy;
 
     // ----- Rip -----
     in property <string> rip-title;
@@ -508,6 +520,8 @@ export component MainWindow inherits Window {
     callback search-items(string);
     callback item-chosen(int);
     callback rip();
+    callback film-title-toggled(int);
+    callback film-viewing-copy-toggled();
     callback upload-anyway();
     callback rip-again();
     callback back-to-disc();
@@ -829,8 +843,14 @@ export component MainWindow inherits Window {
                     color: root.disc-ready ? Theme.ink : Theme.muted;
                 }
 
-                if root.disc-ready: Kicker {
+                if root.disc-ready && !root.film-mode: Kicker {
                     text: "MUSICBRAINZ MATCHES";
+                }
+
+                if root.film-mode: Body {
+                    text: root.film-notice;
+                    font-size: 13px;
+                    wrap: word-wrap;
                 }
 
                 if root.lookup-status != "": Body {
@@ -838,7 +858,7 @@ export component MainWindow inherits Window {
                     font-size: 13px;
                 }
 
-                if root.disc-ready: ScrollView {
+                if root.disc-ready && !root.film-mode: ScrollView {
                     vertical-stretch: 1;
                     min-height: 120px;
                     VerticalLayout {
@@ -863,7 +883,7 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                if root.disc-ready: HorizontalLayout {
+                if root.disc-ready && !root.film-mode: HorizontalLayout {
                     spacing: 8px;
                     LineEdit {
                         text <=> root.release-search;
@@ -882,13 +902,98 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                if !root.disc-ready: Rectangle {
+                if !root.disc-ready || root.film-mode: Rectangle {
                     vertical-stretch: 1;
                 }
             }
 
+            // Right, for a film disc: title, year, which titles to copy.
+            if root.disc-ready && root.film-mode: ScrollView {
+                horizontal-stretch: 1;
+                VerticalLayout {
+                    spacing: 12px;
+                    padding-right: 12px;
+                    Kicker {
+                        text: "FILM DETAILS";
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Field {
+                            label: "Title";
+                            text <=> root.album-title;
+                            horizontal-stretch: 3;
+                            edited(value) => {
+                                root.album-title-edited(value);
+                            }
+                        }
+
+                        Field {
+                            label: "Year";
+                            text <=> root.year;
+                            horizontal-stretch: 1;
+                            edited(value) => {
+                                root.year-edited(value);
+                            }
+                        }
+                    }
+
+                    Kicker {
+                        text: "TITLES ON THE DISC";
+                    }
+
+                    for title[index] in root.film-titles: ChoiceItem {
+                        title: title.title;
+                        detail: title.detail;
+                        selected: title.selected;
+                        clicked => {
+                            root.film-title-toggled(index);
+                        }
+                    }
+
+                    Kicker {
+                        text: "THE COPIES";
+                    }
+
+                    Body {
+                        text: "The master is a lossless MKV, kept as an archive file on the item page.";
+                        font-size: 13px;
+                        wrap: word-wrap;
+                    }
+
+                    if root.film-can-choose-copy: ChoiceItem {
+                        title: "Also make a viewing copy";
+                        detail: "WebM (AV1 and Opus) the Player can stream. Untick to archive the master only.";
+                        selected: root.film-viewing-copy;
+                        clicked => {
+                            root.film-viewing-copy-toggled();
+                        }
+                    }
+
+                    Body {
+                        text: "A new catalogue entry (type Film) is made from these details.";
+                        font-size: 13px;
+                        wrap: word-wrap;
+                    }
+
+                    HorizontalLayout {
+                        alignment: end;
+                        padding-top: 8px;
+                        LButton {
+                            text: "Rip";
+                            primary: true;
+                            enabled: root.can-rip;
+                            description: "Copy the ticked titles, make the viewing copy and add the film to the library";
+                            clicked => {
+                                root.rip();
+                            }
+                        }
+                    }
+                }
+            }
+
             // Right: details, tracks, destination.
-            if root.disc-ready: ScrollView {
+            if root.disc-ready && !root.film-mode: ScrollView {
                 horizontal-stretch: 1;
                 VerticalLayout {
                     spacing: 12px;

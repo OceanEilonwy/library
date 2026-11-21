@@ -10,6 +10,7 @@
 //! - [`encode`] — FLAC through libFLAC, tags, cover (C).
 //! - [`library`] — rip API client, connect handshake, key store (D).
 //! - [`musicbrainz`] — disc-ID lookup, release metadata, cover art (D).
+//! - [`video`] — film discs: MakeMKV copies, ffmpeg viewing copies (stage 2).
 //! - [`app`] — state machine, pipeline, settings, headless runner, GUI (E).
 
 #![warn(missing_docs)]
@@ -26,6 +27,7 @@ pub mod model;
 pub mod musicbrainz;
 #[cfg(any(test, feature = "testsupport"))]
 pub mod testsupport;
+pub mod video;
 
 /// This build's version (`CARGO_PKG_VERSION`).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

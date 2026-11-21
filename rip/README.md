@@ -4,9 +4,10 @@ An archival disc ripper for **The Library**. Put in an audio CD, confirm
 what it is, press **Rip**: Library Rip reads it securely (libcdio-paranoia),
 checks it against AccurateRip and the CUETools database, writes one FLAC per
 track with tags and cover, a cue sheet, a rip log and `rip.json`, and uploads
-everything to your library. Film discs (via a user-installed `makemkvcon`)
-come in later stages. The contract with the server is
-[`docs/rip.md`](../docs/rip.md).
+everything to your library. A film disc (DVD) is copied by a user-installed
+`makemkvcon` into a lossless MKV master, and a user-installed `ffmpeg` makes a
+WebM (AV1 and Opus) copy the Player streams; see [Film discs](#film-discs).
+The contract with the server is [`docs/rip.md`](../docs/rip.md).
 
 Licence: AGPL-3.0-or-later, like the rest of the repository. Slint is used
 under its GPLv3 option; libcdio and libcdio-paranoia are GPLv3; libFLAC is
@@ -163,6 +164,51 @@ MusicBrainz, the Cover Art Archive, AccurateRip and CTDB at test servers:
 `library-rip mock-services DIR` serves all five for a simulated disc and
 prints the variables. The window reads the same variables.
 
+## Film discs
+
+Put in a DVD and press **Look again**. When the disc has no music, Library
+Rip asks MakeMKV what is on it (`makemkvcon -r info`, about a minute) and the
+Disc screen lists the titles with their length, size, chapters, picture and
+sound. The longest title is ticked; tick extras if you want them. Type the
+film's title (filled in from the disc's name) and year, press **Rip**:
+
+1. MakeMKV copies each ticked title to a lossless MKV (the **master**, kept
+   as an archive file on the item page, never shown in the Player);
+2. ffmpeg makes the **viewing copy**: WebM, AV1 video (`libsvtav1`, else
+   `libaom-av1`) and Opus stereo, never above 1080p and never scaled up,
+   with a DVD's wide-screen pixels made square so it plays at the right
+   shape. Untick "Also make a viewing copy" to archive the master only;
+3. a rip log and `rip.json` (the disc, its titles and streams, checksums)
+   are written, and everything is uploaded to a new **Film** entry:
+   the viewing copy as `video`, the rest as `archive`. A DVD needs about
+   8 GB of free space in the work folder while it runs. Uploads resume like
+   music ones.
+
+Nothing is bundled: both programs are found, in this order, through
+`LIBRARY_RIP_MAKEMKVCON` / `LIBRARY_RIP_FFMPEG`, the `PATH`, and for MakeMKV
+the Flathub install (`flatpak run --command=makemkvcon com.makemkv.MakeMKV`,
+given `--device=all` and the work folder) and the installer's usual places.
+If MakeMKV is missing the app says how to install it for your system; without
+ffmpeg (or one with no AV1 or Opus encoder) it archives the master only and
+says so.
+
+On Linux, MakeMKV talks to the drive through the `sg` kernel module:
+`sudo modprobe sg` (put `sg` in a file in `/etc/modules-load.d/` to keep it)
+if MakeMKV says it cannot see the drive. Blu-ray discs are handed to MakeMKV
+too, but that is untested, and MakeMKV needs your own registration key.
+Adding a film to an existing catalogue entry is not offered yet; each film
+disc makes a new entry.
+
+Testing without a drive: `tests/data/fake-makemkvcon` is a stand-in that
+prints MakeMKV's robot-mode output for a DVD and writes a tiny MKV with
+ffmpeg. Point `LIBRARY_RIP_MAKEMKVCON` at it (and `FAKE_MAKEMKV_INFO` at
+`tests/data/makemkv-info-short.txt` for a two-second title) and run
+`library-rip headless-film --library URL --device-code` (a test tool: needs
+`--features testsupport`). `tests/e2e_film.rs` does exactly that against the
+real server and plays the result back through the Player API. The robot-mode
+samples in `tests/data` were written from MakeMKV's documented format, not
+captured from a real disc.
+
 ## Releases
 
 Pushing a tag `rip-vX.Y.Z` (matching `version` in `Cargo.toml`) runs
@@ -198,7 +244,8 @@ Found through `pkg-config` by `build.rs`.
 | macOS | `brew install libcdio libcdio-paranoia flac pkg-config` |
 | Windows | `vcpkg install libcdio libflac` (MSVC), set `PKG_CONFIG_PATH` to vcpkg's `lib/pkgconfig`; or MSYS2 `mingw-w64-ucrt-x86_64-{libcdio,libcdio-paranoia,flac,pkgconf}` |
 
-Film discs (stage 2+) need MakeMKV's `makemkvcon`, installed by the user.
+Film discs need MakeMKV's `makemkvcon`, installed by the user: see
+[Film discs](#film-discs).
 
 ## Module map and lanes
 

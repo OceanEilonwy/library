@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use url::Url;
 
 use super::controller::{Backend, EventSender};
+use super::film::{self, FilmJob, FilmOutput, FilmScan, FilmTools, ViewingSupport};
 use super::pipeline::{self, Endpoints, RipOutput, RipRequest, Services, UploadOutput};
 use super::settings::{self, Settings};
 use super::state::{ConnectMethod, Event, MUSIC_TYPE, RipJob};
@@ -336,6 +337,57 @@ impl Backend for LiveBackend {
         Ok(info)
     }
 
+    fn film_supported(&self) -> bool {
+        true
+    }
+
+    async fn scan_film(&self, device: String) -> Result<FilmScan> {
+        use crate::video::makemkv::{self, MakeMkv};
+        use crate::video::{VideoError, ffmpeg::Ffmpeg};
+        let never = AtomicBool::new(false);
+        let makemkv = makemkv::discover()
+            .await
+            .ok_or(VideoError::MakeMkvMissing)?;
+        let drives = makemkv.drives(&never).await?;
+        let drive = MakeMkv::pick_drive(&drives, &device)?;
+        let disc = makemkv.scan(drive.index, &never).await?;
+        let viewing = ViewingSupport::from_check(&Ffmpeg::discover().await);
+        Ok(FilmScan {
+            disc_index: drive.index,
+            drive_name: drive.name.clone(),
+            disc,
+            viewing,
+        })
+    }
+
+    async fn rip_film(
+        &self,
+        job: FilmJob,
+        events: EventSender,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<FilmOutput> {
+        use crate::video::VideoError;
+        use crate::video::ffmpeg::Ffmpeg;
+        use crate::video::makemkv;
+        let makemkv = makemkv::discover()
+            .await
+            .ok_or(VideoError::MakeMkvMissing)?;
+        let ffmpeg = if job.viewing_copy {
+            Ffmpeg::discover().await.ok()
+        } else {
+            None
+        };
+        let type_slug = film_type_slug(&self.library()?).await?;
+        let tools = FilmTools {
+            makemkv_version: makemkv.version(&cancel).await,
+            makemkv: &makemkv,
+            ffmpeg: ffmpeg.as_ref(),
+            type_slug: &type_slug,
+        };
+        let forward = move |event| events.send(Event::FilmProgress(event));
+        film::rip_film(&job, &tools, &self.new_work_dir(), &cancel, &forward).await
+    }
+
     async fn find_releases(&self, disc: DiscInfo) -> Result<Vec<ReleaseCandidate>> {
         let ids = discid::disc_ids(&disc.toc)?;
         Ok(self
@@ -449,6 +501,23 @@ pub async fn load_release(
 }
 
 /// Removes a finished rip's work folder, but only inside the work root.
+/// The slug of the library's film type: `film`, else the first type that
+/// looks films up.
+async fn film_type_slug(library: &LibraryClient) -> Result<String> {
+    let types = library.types().await?;
+    types
+        .iter()
+        .find(|t| t.slug == "film")
+        .or_else(|| types.iter().find(|t| t.lookup.as_deref() == Some("film")))
+        .map(|t| t.slug.clone())
+        .ok_or_else(|| {
+            AppError::Task(
+                "the library has no Film type to put this disc under; add one on the Librarian's desk"
+                    .to_owned(),
+            )
+        })
+}
+
 fn remove_work_dir(work_root: &Path, folder: &Path) {
     if !folder.starts_with(work_root) || folder == work_root {
         return;

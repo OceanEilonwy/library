@@ -9,10 +9,12 @@
 //!   feeds the results back as events.
 //! - [`live`]: the real backend (drives, library, MusicBrainz, key store).
 //! - [`pipeline`]: reading, verifying, encoding and uploading.
+//! - [`film`]: film discs through MakeMKV and ffmpeg (stage 2).
 //! - [`headless`]: the whole flow without a window.
 //! - [`gui`]: the Slint window.
 
 pub mod controller;
+pub mod film;
 pub mod gui;
 pub mod headless;
 pub mod live;
@@ -39,6 +41,9 @@ pub enum AppError {
     /// Library problem.
     #[error(transparent)]
     Library(#[from] crate::library::LibraryError),
+    /// Film disc problem (MakeMKV, ffmpeg).
+    #[error(transparent)]
+    Video(#[from] crate::video::VideoError),
     /// MusicBrainz problem.
     #[error(transparent)]
     MusicBrainz(#[from] crate::musicbrainz::MusicBrainzError),
@@ -96,7 +101,9 @@ impl AppError {
     pub fn is_cancelled(&self) -> bool {
         matches!(
             self,
-            AppError::Cancelled | AppError::Drive(DriveError::Cancelled)
+            AppError::Cancelled
+                | AppError::Drive(DriveError::Cancelled)
+                | AppError::Video(crate::video::VideoError::Cancelled)
         )
     }
 
@@ -106,6 +113,7 @@ impl AppError {
             AppError::Cancelled => cancelled_problem(),
             AppError::Drive(error) => drive_problem(error),
             AppError::Library(error) => library_problem(error),
+            AppError::Video(error) => video_problem(error),
             AppError::MusicBrainz(error) => Problem::new(
                 format!("MusicBrainz could not be asked about this disc ({error})."),
                 "You can type the album details yourself, or try again later.",
@@ -146,6 +154,65 @@ impl AppError {
                 "Use `library-rip headless` instead, or check your display settings.",
             ),
         }
+    }
+}
+
+/// How to install MakeMKV on this computer, in one sentence.
+pub fn makemkv_install_help() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => {
+            "Download MakeMKV from makemkv.com and drag it into Applications, then press Look again."
+        }
+        "windows" => "Run the MakeMKV installer from makemkv.com, then press Look again.",
+        _ => {
+            "Install it from Flathub (flatpak install flathub com.makemkv.MakeMKV) or build it \
+             from the tarballs on the MakeMKV forum, then press Look again."
+        }
+    }
+}
+
+/// The law's note that goes with film ripping.
+pub const COPY_PROTECTION_NOTE: &str =
+    "Breaking a disc's copy protection is restricted by law in many countries; check yours.";
+
+fn video_problem(error: &crate::video::VideoError) -> Problem {
+    use crate::video::VideoError as V;
+    match error {
+        V::MakeMkvMissing => Problem::new(
+            "This is a film disc, and Library Rip needs MakeMKV to copy it. MakeMKV is not installed.",
+            format!("{} {COPY_PROTECTION_NOTE}", makemkv_install_help()),
+        ),
+        V::NoMakeMkvDrive => Problem::new(
+            "MakeMKV cannot see this disc drive.",
+            if cfg!(target_os = "linux") {
+                "On Linux MakeMKV needs the sg kernel module: run `sudo modprobe sg` (and add \
+                 `sg` to a file in /etc/modules-load.d to keep it), make sure your user may use the \
+                 drive, then press Look again."
+            } else {
+                "Close any other program using the drive (including MakeMKV itself), then press Look again."
+            },
+        ),
+        V::MakeMkv(lines) => Problem::new(
+            if lines.is_empty() {
+                "MakeMKV could not read this disc.".to_owned()
+            } else {
+                format!("MakeMKV could not read this disc: {}", lines.join(" "))
+            },
+            "Clean the disc and press Look again. Blu-ray discs need your own MakeMKV registration key (Help, Register in MakeMKV); Library Rip has only been tried with DVDs.",
+        ),
+        V::NoTitles => Problem::new(
+            "MakeMKV found nothing to copy on this disc.",
+            "Library Rip copies audio CDs, DVDs and Blu-ray discs. Put one in and press Look again.",
+        ),
+        V::NoOutput(_) | V::Start { .. } | V::Io { .. } => Problem::new(
+            format!("The film could not be copied: {error}."),
+            "Check there is plenty of free space (a DVD needs about 8 GB), then rip again.",
+        ),
+        V::FfmpegMissing | V::NoEncoders(_) | V::Encode(_) => Problem::new(
+            format!("The viewing copy could not be made: {error}."),
+            "Rip again and tick \"Archive the master only\", or install an ffmpeg with AV1 and Opus.",
+        ),
+        V::Cancelled => cancelled_problem(),
     }
 }
 

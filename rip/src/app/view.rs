@@ -4,6 +4,7 @@
 //! copies a [`ViewModel`] into the window's properties without deciding
 //! anything.
 
+use super::film::ViewingSupport;
 use super::state::{
     AppState, ConnectPhase, Destination, DiscPhase, RipPhase, Screen, Task, TrackStage,
     UploadPhase, UploadStage,
@@ -43,6 +44,17 @@ pub struct ChoiceRow {
     pub title: String,
     /// Second line.
     pub detail: String,
+}
+
+/// A title of a film disc: ticked or not.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TitleRow {
+    /// First line.
+    pub title: String,
+    /// Second line.
+    pub detail: String,
+    /// It will be copied.
+    pub selected: bool,
 }
 
 /// An editable track title on the Disc screen.
@@ -142,6 +154,16 @@ pub struct ViewModel {
     pub item_index: i32,
     /// Rip can be pressed.
     pub can_rip: bool,
+    /// The disc is a film disc.
+    pub film_mode: bool,
+    /// What MakeMKV and ffmpeg make of it.
+    pub film_notice: String,
+    /// The titles on a film disc.
+    pub film_titles: Vec<TitleRow>,
+    /// A viewing copy can be made, so there is a choice.
+    pub film_can_choose_copy: bool,
+    /// The viewing copy will be made.
+    pub film_viewing_copy: bool,
 
     // Rip
     /// Rip heading.
@@ -243,6 +265,9 @@ fn accuraterip_tone(status: &AccurateRipStatus) -> Tone {
 }
 
 fn busy_label(state: &AppState) -> String {
+    if state.film_scanning && state.is_busy(Task::Disc) {
+        return "Asking MakeMKV what is on the disc… this can take a minute".to_owned();
+    }
     // The most important running task speaks.
     let label = [
         (Task::Rip, ""),
@@ -340,8 +365,11 @@ impl ViewModel {
     fn disc(&mut self, state: &AppState) {
         self.drives = state.drives.iter().map(|d| d.label.clone()).collect();
         self.drive_index = index(state.drive);
-        self.disc_ready = state.disc_phase == DiscPhase::Ready && state.disc.is_some();
+        self.disc_ready =
+            state.disc_phase == DiscPhase::Ready && (state.disc.is_some() || state.film.is_some());
+        self.film(state);
         self.disc_summary = match (state.disc_phase, &state.disc) {
+            (DiscPhase::Ready, None) if state.film.is_some() => film_summary(state),
             (DiscPhase::Ready, Some(disc)) => {
                 let audio = disc.toc.audio_tracks().count();
                 let tracks = if audio == 1 { "track" } else { "tracks" };
@@ -356,12 +384,16 @@ impl ViewModel {
                     disc.drive
                 )
             }
+            (DiscPhase::Looking, _) if state.film_scanning => {
+                "This is not an audio CD. Asking MakeMKV what is on it…".to_owned()
+            }
             (DiscPhase::Looking, _) => "Looking for a disc…".to_owned(),
             (DiscPhase::NoDrive, _) => {
                 "No disc drive was found. Plug one in and press Look again.".to_owned()
             }
             (DiscPhase::Empty, _) | (DiscPhase::Ready, None) => {
-                "No disc found. Put in an audio CD and press Look again.".to_owned()
+                "No disc found. Put in an audio CD, DVD or Blu-ray disc and press Look again."
+                    .to_owned()
             }
         };
         self.candidates = state
@@ -456,10 +488,59 @@ impl ViewModel {
             && !state.is_busy(Task::Upload);
     }
 
+    fn film(&mut self, state: &AppState) {
+        let Some(film) = &state.film else {
+            return;
+        };
+        self.film_mode = true;
+        self.film_can_choose_copy = film.can_make_viewing_copy();
+        self.film_viewing_copy = film.viewing_copy;
+        self.film_notice = match &film.scan.viewing {
+            ViewingSupport::Available { encoder } => format!(
+                "Copies are made with MakeMKV. The viewing copy is made with your ffmpeg ({encoder}, Opus)."
+            ),
+            ViewingSupport::Unavailable { reason } => format!(
+                "{reason} Without it only the lossless master can be archived: the Player will have nothing to play yet. \
+                 Install ffmpeg with AV1 (libsvtav1 or libaom) and Opus, then press Look again."
+            ),
+        };
+        self.film_titles = film
+            .scan
+            .disc
+            .titles
+            .iter()
+            .map(|title| {
+                let selected = film.selected.contains(&title.id);
+                let name = if title.name.trim().is_empty() {
+                    format!("Title {}", title.id + 1)
+                } else {
+                    title.name.trim().to_owned()
+                };
+                TitleRow {
+                    title: name,
+                    detail: format!(
+                        "{} · {}",
+                        if selected {
+                            "Will be copied"
+                        } else {
+                            "Not copied"
+                        },
+                        title.summary()
+                    ),
+                    selected,
+                }
+            })
+            .collect();
+    }
+
     fn rip(&mut self, state: &AppState) {
         let Some(rip) = &state.rip else {
             return;
         };
+        if state.film.is_some() {
+            self.film_rip(state, rip);
+            return;
+        }
         self.rip_running = state.is_busy(Task::Rip);
         self.rip_title = match &rip.phase {
             RipPhase::Running if self.rip_running => {
@@ -535,6 +616,58 @@ impl ViewModel {
             self.rip_decision = true;
             self.rip_issues = issues.clone();
         }
+        self.rip_failed = rip.phase == RipPhase::Failed;
+    }
+
+    fn film_rip(&mut self, state: &AppState, rip: &crate::app::state::RipProgress) {
+        self.rip_running = state.is_busy(Task::Rip);
+        let viewing = state.film.as_ref().is_some_and(|f| f.viewing_copy);
+        self.rip_title = match &rip.phase {
+            RipPhase::Running if self.rip_running => {
+                if rip.rows.iter().any(|r| r.stage == TrackStage::Encoding) {
+                    "Making the viewing copy…".to_owned()
+                } else {
+                    "Copying the disc with MakeMKV…".to_owned()
+                }
+            }
+            RipPhase::Running => "Copied".to_owned(),
+            RipPhase::Stopping => "Stopping…".to_owned(),
+            RipPhase::NeedsDecision { .. } | RipPhase::Failed => {
+                "The film did not finish copying".to_owned()
+            }
+        };
+        self.rip_detail = if viewing {
+            "Lossless MKV master, then a WebM viewing copy. A DVD takes a while: leave this open."
+        } else {
+            "Lossless MKV master only. A DVD takes a while: leave this open."
+        }
+        .to_owned();
+        self.rip_rows = rip
+            .rows
+            .iter()
+            .map(|row| {
+                let (status, progress) = match row.stage {
+                    TrackStage::Waiting => ("Waiting".to_owned(), 0.0),
+                    TrackStage::Reading { .. } => {
+                        (format!("Copying {}%", percent(row.fraction)), row.fraction)
+                    }
+                    TrackStage::Read => ("Copied".to_owned(), 1.0),
+                    TrackStage::Encoding => (
+                        format!("Making viewing copy {}%", percent(row.fraction)),
+                        row.fraction,
+                    ),
+                    TrackStage::Done => ("Done".to_owned(), 1.0),
+                };
+                ProgressRow {
+                    label: row.number.get().to_string(),
+                    title: row.title.clone(),
+                    detail: duration(row.duration_ms),
+                    progress,
+                    status,
+                    tone: Tone::Neutral,
+                }
+            })
+            .collect();
         self.rip_failed = rip.phase == RipPhase::Failed;
     }
 
@@ -627,6 +760,23 @@ impl ViewModel {
         self.can_disconnect =
             state.connection.is_some() && !state.is_busy(Task::Rip) && !state.is_busy(Task::Upload);
     }
+}
+
+fn film_summary(state: &AppState) -> String {
+    let (Some(film), drive) = (&state.film, state.selected_drive()) else {
+        return String::new();
+    };
+    let titles = film.scan.disc.titles.len();
+    let kind = if film.scan.disc.kind.is_empty() {
+        "Film disc"
+    } else {
+        film.scan.disc.kind.as_str()
+    };
+    let drive = drive.map(|d| format!(" · in {}", d.label)).unwrap_or_default();
+    format!(
+        "{kind} · {titles} {}{drive}",
+        if titles == 1 { "title" } else { "titles" }
+    )
 }
 
 fn ctdb_summary(status: &CtdbStatus) -> String {

@@ -16,11 +16,12 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use url::Url;
 
+use super::film::{FilmJob, FilmOutput, FilmScan};
 use super::pipeline::{RipOutput, UploadOutput};
 use super::settings::Settings;
 use super::state::{AppState, Command, ConnectMethod, Event, RipJob, Task};
 use super::{AppError, Result};
-use crate::drive::DriveDescriptor;
+use crate::drive::{DriveDescriptor, DriveError};
 use crate::library::api::{ItemSummary, WhoAmI};
 use crate::model::{DiscInfo, ReleaseMetadata, Toc, UploadPlan};
 use crate::musicbrainz::ReleaseCandidate;
@@ -75,6 +76,30 @@ pub trait Backend: Send + Sync + 'static {
 
     /// Reads the disc in `device`.
     fn read_disc(&self, device: String) -> impl Future<Output = Result<DiscInfo>> + Send;
+
+    /// Whether film discs can be ripped (MakeMKV is looked for when the disc
+    /// turns out to have no music). Backends that cannot leave this false.
+    fn film_supported(&self) -> bool {
+        false
+    }
+
+    /// Asks MakeMKV about the film disc in `device`.
+    fn scan_film(&self, device: String) -> impl Future<Output = Result<FilmScan>> + Send {
+        let _ = device;
+        async { Err(AppError::Task("film discs are not supported here".to_owned())) }
+    }
+
+    /// Copies film titles and makes viewing copies, reporting
+    /// [`Event::FilmProgress`].
+    fn rip_film(
+        &self,
+        job: FilmJob,
+        events: EventSender,
+        cancel: Arc<AtomicBool>,
+    ) -> impl Future<Output = Result<FilmOutput>> + Send {
+        let _ = (job, events, cancel);
+        async { Err(AppError::Task("film discs are not supported here".to_owned())) }
+    }
 
     /// MusicBrainz releases matching the disc.
     fn find_releases(
@@ -234,10 +259,18 @@ impl<B: Backend> Controller<B> {
                 backend.list_drives().await.map(Event::DrivesListed)
             }),
             Command::ReadDisc { device } => self.spawn(Task::Disc, None, async move {
-                backend
-                    .read_disc(device)
-                    .await
-                    .map(|disc| Event::DiscDetected(Box::new(disc)))
+                match backend.read_disc(device.clone()).await {
+                    Ok(disc) => Ok(Event::DiscDetected(Box::new(disc))),
+                    // No music on it: a film disc, if this backend does those.
+                    Err(AppError::Drive(DriveError::NoAudio)) if backend.film_supported() => {
+                        events.send(Event::FilmScanning);
+                        backend
+                            .scan_film(device)
+                            .await
+                            .map(|scan| Event::FilmDetected(Box::new(scan)))
+                    }
+                    Err(error) => Err(error),
+                }
             }),
             Command::FindReleases { disc } => self.spawn(Task::Releases, None, async move {
                 backend
@@ -270,6 +303,16 @@ impl<B: Backend> Controller<B> {
                         .rip(*job, events, flag)
                         .await
                         .map(|output| Event::RipFinished(Box::new(output)))
+                });
+            }
+            Command::StartFilmRip(job) => {
+                let cancel = Arc::new(AtomicBool::new(false));
+                let flag = Arc::clone(&cancel);
+                self.spawn(Task::Rip, Some(cancel), async move {
+                    backend
+                        .rip_film(*job, events, flag)
+                        .await
+                        .map(|output| Event::FilmRipped(Box::new(output)))
                 });
             }
             Command::StartUpload { plan, folder } => {

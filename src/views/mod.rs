@@ -86,6 +86,7 @@ pub fn page(ctx: &Ctx, title: &str, header: Header, body: Markup) -> Markup {
                         span { (ctx.branding.title) }
                         span.footer-links {
                             @if ctx.admin { a href="/admin" { "Librarian's desk" } }
+                            a href="/ripper" { "Get Library Rip" }
                             a href=(ctx.source_url) rel="noopener" { "Source code" }
                         }
                     }

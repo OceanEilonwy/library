@@ -3077,6 +3077,7 @@ dependencies = [
  "hostname",
  "jiff",
  "keyring",
+ "libc",
  "library-rip",
  "open",
  "pkg-config",

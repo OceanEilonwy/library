@@ -80,6 +80,20 @@ elif [ "$CROSS_BUILD" ] && [ "$XBPS_TARGET_MACHINE" = x86_64 ]; then
 	checksum+=" 7b85b56d7169c076fa1e31de5a4e3052ff8400d887dd80f47aa69579e15c85f8"
 fi
 
+# Library Rip, the desktop disc ripper offered on /ripper: the rip-v<_ripver> GitHub release (built
+# on Linux, Windows and macOS runners by .github/workflows/rip-release.yml) is bundled as is, so the
+# page works without anyone copying builds in. When bumping _ripver, copy the hashes from the
+# release's SHA256SUMS.
+_ripver=0.1.0
+_ripbase=https://github.com/OceanEilonwy/library/releases/download/rip-v${_ripver}
+_ripfiles="library-rip-${_ripver}-linux-x86_64.tar.gz library-rip-${_ripver}-windows-x86_64.zip library-rip-${_ripver}-macos-arm64.dmg library-rip-${_ripver}-macos-x86_64.dmg"
+for _f in $_ripfiles; do distfiles+=" ${_ripbase}/${_f}"; done
+checksum+=" c778078ae419ece07d1d4960d5c9f4411069fcca640152aa0904d2eb52692e39
+ b97aebf5d89be573b1ac10ca5b8af42c0997cd145ca1350ac2d6cc2d55a57c4e
+ 4b86390b0eb9f7c9495a129de47b4c3cd7de1af1747e43ec1b20b0abc7910b5c
+ f8457a96dec77e82e2570c8bf8e4c6a9957f3a7fe6eec143b7685b580f7e71c0"
+skip_extraction="$_ripfiles"
+
 build_wrksrc="library-${_commit}"
 _app=opt/nodo/apps/library
 
@@ -141,5 +155,11 @@ do_install() {
 	install -m 755 "${FILESDIR}/library" "${DESTDIR}/${_app}/bin/library"
 	install -m 644 "${FILESDIR}/manifest.toml" "${DESTDIR}/${_app}/manifest.toml"
 	sed -i "s/@VERSION@/${version}/" "${DESTDIR}/${_app}/manifest.toml"
+	# The library looks for downloads/library-rip next to its program.
+	vmkdir ${_app}/libexec/downloads/library-rip 755
+	for _f in $_ripfiles; do
+		install -m 644 "${XBPS_SRCDISTDIR}/${pkgname}-${version}/${_f}" \
+			"${DESTDIR}/${_app}/libexec/downloads/library-rip/${_f}"
+	done
 	install -m 644 "${FILESDIR}/settings.lua" "${DESTDIR}/${_app}/settings.lua"
 }

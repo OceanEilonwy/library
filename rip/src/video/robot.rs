@@ -193,7 +193,9 @@ pub fn parse_line(line: &str) -> Option<Line> {
 pub fn parse_duration(text: &str) -> Option<u64> {
     let mut seconds = 0u64;
     for part in text.trim().split(':') {
-        seconds = seconds.checked_mul(60)?.checked_add(part.trim().parse().ok()?)?;
+        seconds = seconds
+            .checked_mul(60)?
+            .checked_add(part.trim().parse().ok()?)?;
     }
     Some(seconds)
 }

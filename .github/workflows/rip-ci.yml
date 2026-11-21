@@ -53,7 +53,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config libcdio-dev libcdio-paranoia-dev libflac-dev \
-            libfontconfig-dev libxkbcommon-dev libdbus-1-dev
+            libfontconfig-dev libxkbcommon-dev libdbus-1-dev ffmpeg
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -96,7 +96,7 @@ jobs:
         run: |
           cargo build --locked --no-default-features --features cdio
           ./target/debug/library-rip --help
-          for command in make-fake-disc mock-services headless; do
+          for command in make-fake-disc mock-services headless headless-film; do
             if ./target/debug/library-rip "$command" --help; then
               echo "::error::$command is in a build without testsupport"
               exit 1

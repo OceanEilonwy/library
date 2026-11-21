@@ -92,31 +92,70 @@ impl Ffmpeg {
         .collect();
         args.push(input.display().to_string());
         args.extend(
-            ["-map", "0:v:0", "-map", "0:a?", "-sn", "-dn", "-map_metadata", "-1", "-vf"]
-                .into_iter()
-                .map(str::to_owned),
+            [
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-sn",
+                "-dn",
+                "-map_metadata",
+                "-1",
+                "-vf",
+            ]
+            .into_iter()
+            .map(str::to_owned),
         );
         args.push(video_filter());
         if self.video_encoder == "libsvtav1" {
             args.extend(
-                ["-c:v", "libsvtav1", "-crf", "30", "-preset", "6", "-g", "240"]
-                    .into_iter()
-                    .map(str::to_owned),
+                [
+                    "-c:v",
+                    "libsvtav1",
+                    "-crf",
+                    "30",
+                    "-preset",
+                    "6",
+                    "-g",
+                    "240",
+                ]
+                .into_iter()
+                .map(str::to_owned),
             );
         } else {
             args.extend(
                 [
-                    "-c:v", "libaom-av1", "-crf", "32", "-b:v", "0", "-cpu-used", "6", "-row-mt",
-                    "1", "-g", "240",
+                    "-c:v",
+                    "libaom-av1",
+                    "-crf",
+                    "32",
+                    "-b:v",
+                    "0",
+                    "-cpu-used",
+                    "6",
+                    "-row-mt",
+                    "1",
+                    "-g",
+                    "240",
                 ]
                 .into_iter()
                 .map(str::to_owned),
             );
         }
         args.extend(
-            ["-pix_fmt", "yuv420p", "-c:a", "libopus", "-b:a", "128k", "-ac", "2", "-metadata"]
-                .into_iter()
-                .map(str::to_owned),
+            [
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "128k",
+                "-ac",
+                "2",
+                "-metadata",
+            ]
+            .into_iter()
+            .map(str::to_owned),
         );
         args.push(format!("title={title}"));
         args.push(output.display().to_string());
@@ -208,7 +247,11 @@ fn find_program(env: Option<PathBuf>, path: Option<std::ffi::OsString>) -> Optio
     if let Some(program) = env.filter(|p| !p.as_os_str().is_empty()) {
         return Some(program);
     }
-    let name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    let name = if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
     std::env::split_paths(&path?)
         .map(|dir| dir.join(name))
         .find(|candidate| candidate.is_file())
@@ -225,12 +268,30 @@ mod tests {
     #[test]
     fn svt_is_preferred_and_opus_is_required() {
         assert_eq!(choose_encoder(ENCODERS).unwrap(), "libsvtav1");
-        let aom_only: String = ENCODERS.lines().filter(|l| !l.contains("svtav1")).collect::<Vec<_>>().join("\n");
+        let aom_only: String = ENCODERS
+            .lines()
+            .filter(|l| !l.contains("svtav1"))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert_eq!(choose_encoder(&aom_only).unwrap(), "libaom-av1");
-        let no_opus: String = ENCODERS.lines().filter(|l| !l.contains("libopus")).collect::<Vec<_>>().join("\n");
-        assert!(matches!(choose_encoder(&no_opus), Err(VideoError::NoEncoders(_))));
-        let no_av1: String = ENCODERS.lines().filter(|l| l.contains("libopus")).collect::<Vec<_>>().join("\n");
-        assert!(matches!(choose_encoder(&no_av1), Err(VideoError::NoEncoders(_))));
+        let no_opus: String = ENCODERS
+            .lines()
+            .filter(|l| !l.contains("libopus"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(matches!(
+            choose_encoder(&no_opus),
+            Err(VideoError::NoEncoders(_))
+        ));
+        let no_av1: String = ENCODERS
+            .lines()
+            .filter(|l| l.contains("libopus"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(matches!(
+            choose_encoder(&no_av1),
+            Err(VideoError::NoEncoders(_))
+        ));
     }
 
     #[test]
@@ -238,7 +299,10 @@ mod tests {
         assert_eq!(progress_fraction("out_time_us=30000000", 60), Some(0.5));
         assert_eq!(progress_fraction("out_time_ms=60000000", 60), Some(1.0));
         assert_eq!(progress_fraction("out_time_us=999999999999", 60), Some(1.0));
-        assert_eq!(progress_fraction("out_time_us=-9223372036854775807", 60), None);
+        assert_eq!(
+            progress_fraction("out_time_us=-9223372036854775807", 60),
+            None
+        );
         assert_eq!(progress_fraction("out_time_us=5", 0), None);
         assert_eq!(progress_fraction("bitrate=1000kbits/s", 60), None);
     }

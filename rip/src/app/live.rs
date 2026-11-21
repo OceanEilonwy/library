@@ -345,7 +345,9 @@ impl Backend for LiveBackend {
         use crate::video::makemkv::{self, MakeMkv};
         use crate::video::{VideoError, ffmpeg::Ffmpeg};
         let never = AtomicBool::new(false);
-        let makemkv = makemkv::discover().await.ok_or(VideoError::MakeMkvMissing)?;
+        let makemkv = makemkv::discover()
+            .await
+            .ok_or(VideoError::MakeMkvMissing)?;
         let drives = makemkv.drives(&never).await?;
         let drive = MakeMkv::pick_drive(&drives, &device)?;
         let disc = makemkv.scan(drive.index, &never).await?;
@@ -367,7 +369,9 @@ impl Backend for LiveBackend {
         use crate::video::VideoError;
         use crate::video::ffmpeg::Ffmpeg;
         use crate::video::makemkv;
-        let makemkv = makemkv::discover().await.ok_or(VideoError::MakeMkvMissing)?;
+        let makemkv = makemkv::discover()
+            .await
+            .ok_or(VideoError::MakeMkvMissing)?;
         let ffmpeg = if job.viewing_copy {
             Ffmpeg::discover().await.ok()
         } else {

@@ -260,9 +260,7 @@ async fn film_flow(
         None => scan.disc.main_title(),
     }
     .cloned()
-    .ok_or_else(|| {
-        HeadlessError::Disc(AppError::Video(crate::video::VideoError::NoTitles))
-    })?;
+    .ok_or_else(|| HeadlessError::Disc(AppError::Video(crate::video::VideoError::NoTitles)))?;
     let name = options.name.clone().unwrap_or_else(|| {
         crate::video::scan::clean_name(if scan.disc.name.is_empty() {
             &scan.disc.volume
@@ -272,10 +270,7 @@ async fn film_flow(
     });
     report(&format!("Film: {name} (title {}).", chosen.id));
     let viewing_copy = options.viewing_copy
-        && matches!(
-            scan.viewing,
-            super::film::ViewingSupport::Available { .. }
-        );
+        && matches!(scan.viewing, super::film::ViewingSupport::Available { .. });
     if options.viewing_copy && !viewing_copy {
         report("No viewing copy: ffmpeg with AV1 and Opus was not found.");
     }
@@ -582,7 +577,9 @@ pub fn describe(event: &Event) -> Option<String> {
         Event::FilmProgress(super::film::FilmEvent::Finished { title }) => {
             Some(format!("Title {title}: done."))
         }
-        Event::FilmProgress(super::film::FilmEvent::Copying { title, fraction }) if *fraction >= 1.0 => {
+        Event::FilmProgress(super::film::FilmEvent::Copying { title, fraction })
+            if *fraction >= 1.0 =>
+        {
             Some(format!("Title {title}: copied."))
         }
         _ => None,

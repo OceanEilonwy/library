@@ -772,7 +772,9 @@ fn film_summary(state: &AppState) -> String {
     } else {
         film.scan.disc.kind.as_str()
     };
-    let drive = drive.map(|d| format!(" · in {}", d.label)).unwrap_or_default();
+    let drive = drive
+        .map(|d| format!(" · in {}", d.label))
+        .unwrap_or_default();
     format!(
         "{kind} · {titles} {}{drive}",
         if titles == 1 { "title" } else { "titles" }

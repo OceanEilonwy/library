@@ -326,11 +326,14 @@ pub fn ripper_page(ctx: &Ctx, v: &RipperView) -> Markup {
                     }
                 }
                 section.right aria-labelledby="films-title" {
-                    h2 #films-title .kicker { "Films (DVD and Blu-ray)" }
+                    h2 #films-title .kicker { "Films (DVDs)" }
                     p {
-                        "Music CDs need nothing else. For films, Library Rip uses MakeMKV's "
-                        span.mono { "makemkvcon" } ", which you install yourself:"
+                        "Music CDs need nothing else. For a film disc, Library Rip copies the film with MakeMKV's "
+                        span.mono { "makemkvcon" } " into a lossless MKV (kept as an archive file on the item page), "
+                        "and makes a WebM copy the Player can play with " span.mono { "ffmpeg" } ". "
+                        "Install them yourself; Library Rip finds them on its own."
                     }
+                    h3.small.caps { "MakeMKV" }
                     dl.makemkv {
                         dt { "Linux" }
                         dd {
@@ -344,7 +347,22 @@ pub fn ripper_page(ctx: &Ctx, v: &RipperView) -> Markup {
                         dd { "Open the macOS disk image from " a href="https://www.makemkv.com/download/" rel="noopener" { "makemkv.com" } " and drag MakeMKV into Applications." }
                     }
                     p.small.muted {
-                        "DVDs work with MakeMKV for free; Blu-ray needs your own MakeMKV key. "
+                        "On Linux MakeMKV also needs the " span.mono { "sg" } " kernel module "
+                        "(" span.mono { "sudo modprobe sg" } "), and your user must be allowed to use the drive."
+                    }
+                    h3.small.caps { "ffmpeg (for the viewing copy)" }
+                    p {
+                        "Any ffmpeg with an AV1 encoder (" span.mono { "libsvtav1" } " or " span.mono { "libaom-av1" }
+                        ") and " span.mono { "libopus" } ": "
+                        span.mono { "sudo apt install ffmpeg" } " or " span.mono { "sudo pacman -S ffmpeg" }
+                        " on Linux, " span.mono { "brew install ffmpeg" } " on macOS, "
+                        a href="https://www.gyan.dev/ffmpeg/builds/" rel="noopener" { "gyan.dev" }
+                        " or " span.mono { "winget install ffmpeg" } " on Windows. Without it Library Rip "
+                        "archives the master only, and the Player has nothing to play yet."
+                    }
+                    p.small.muted {
+                        "DVDs are what Library Rip has been tried with. Blu-ray discs are passed to MakeMKV too, "
+                        "but that is untested, and MakeMKV needs your own registration key for them. "
                         "Breaking the copy protection on discs is restricted by law in many countries, "
                         "so check what is allowed where you live."
                     }

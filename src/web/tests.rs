@@ -3792,7 +3792,7 @@ async fn ripper_download_page() {
     let page = a.get("/ripper", false).await;
     assert_eq!(page.status, StatusCode::OK);
     assert!(page.body.contains("Get Library Rip"));
-    assert!(page.body.contains("No builds have been put here yet"));
+    assert!(page.body.contains("came without a Library Rip build"));
     assert!(page.body.contains("com.makemkv.MakeMKV"));
     assert!(page.body.contains("restricted by law"));
     assert!(page.body.contains(crate::config::DEFAULT_SOURCE_URL));

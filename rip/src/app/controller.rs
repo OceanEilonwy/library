@@ -86,7 +86,11 @@ pub trait Backend: Send + Sync + 'static {
     /// Asks MakeMKV about the film disc in `device`.
     fn scan_film(&self, device: String) -> impl Future<Output = Result<FilmScan>> + Send {
         let _ = device;
-        async { Err(AppError::Task("film discs are not supported here".to_owned())) }
+        async {
+            Err(AppError::Task(
+                "film discs are not supported here".to_owned(),
+            ))
+        }
     }
 
     /// Copies film titles and makes viewing copies, reporting
@@ -98,7 +102,11 @@ pub trait Backend: Send + Sync + 'static {
         cancel: Arc<AtomicBool>,
     ) -> impl Future<Output = Result<FilmOutput>> + Send {
         let _ = (job, events, cancel);
-        async { Err(AppError::Task("film discs are not supported here".to_owned())) }
+        async {
+            Err(AppError::Task(
+                "film discs are not supported here".to_owned(),
+            ))
+        }
     }
 
     /// MusicBrainz releases matching the disc.
@@ -824,7 +832,12 @@ mod tests {
             async fn search_items(&self, _: String) -> Result<Vec<ItemSummary>> {
                 Ok(Vec::new())
             }
-            async fn rip(&self, _: RipJob, _: EventSender, _: Arc<AtomicBool>) -> Result<RipOutput> {
+            async fn rip(
+                &self,
+                _: RipJob,
+                _: EventSender,
+                _: Arc<AtomicBool>,
+            ) -> Result<RipOutput> {
                 Err(AppError::Cancelled)
             }
             async fn upload(
@@ -852,7 +865,15 @@ mod tests {
         let mut controller = Controller::new(NoFilms);
         settle(&mut controller, |s| s.disc_phase == DiscPhase::Empty).await;
         assert!(controller.state().film.is_none());
-        assert!(controller.state().problem.as_ref().unwrap().message.contains("no music"));
+        assert!(
+            controller
+                .state()
+                .problem
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("no music")
+        );
     }
 
     #[tokio::test]

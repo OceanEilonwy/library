@@ -1,0 +1,14 @@
+# Written by hand from MakeMKV's documented robot format: one two-second title, for the end-to-end test.
+TCOUNT:1
+CINFO:1,6206,"DVD disc"
+CINFO:2,0,"THE_LIBRARY_CARD"
+CINFO:32,0,"THE_LIBRARY_CARD"
+TINFO:0,2,0,"THE_LIBRARY_CARD - 1"
+TINFO:0,8,0,"1"
+TINFO:0,9,0,"0:00:02"
+TINFO:0,11,0,"100000"
+SINFO:0,0,1,6201,"Video"
+SINFO:0,0,19,0,"720x480"
+SINFO:0,1,1,6202,"Audio"
+SINFO:0,1,4,0,"English"
+SINFO:0,1,40,0,"2.0"

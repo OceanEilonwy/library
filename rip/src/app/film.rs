@@ -191,7 +191,12 @@ pub async fn rip_film(
         let mut viewing = None;
         if make_viewing && let Some(ffmpeg) = tools.ffmpeg {
             let output = work_dir.join(format!("{file_stem}.webm"));
-            let mut progress = |fraction: f32| events(FilmEvent::Viewing { title: id, fraction });
+            let mut progress = |fraction: f32| {
+                events(FilmEvent::Viewing {
+                    title: id,
+                    fraction,
+                })
+            };
             ffmpeg
                 .make_viewing_copy(
                     &master,
@@ -473,8 +478,6 @@ fn rip_json(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-    use std::sync::atomic::Ordering;
 
     #[test]
     fn viewing_support_explains_what_is_missing() {
@@ -514,15 +517,18 @@ mod tests {
     mod with_a_stand_in_makemkv {
         use super::*;
         use crate::video::scan::DiscScan;
+        use std::sync::Mutex;
+        use std::sync::atomic::Ordering;
 
         fn fake() -> MakeMkv {
-            MakeMkv::at(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/fake-makemkvcon"))
+            MakeMkv::at(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/data/fake-makemkvcon"
+            ))
         }
 
         fn disc() -> DiscScan {
-            DiscScan::from_lines(
-                include_str!("../../tests/data/makemkv-info-dvd.txt").lines(),
-            )
+            DiscScan::from_lines(include_str!("../../tests/data/makemkv-info-dvd.txt").lines())
         }
 
         fn job(titles: &[usize], viewing_copy: bool) -> FilmJob {
@@ -554,12 +560,19 @@ mod tests {
             let scan = mk.scan(drive.index, &never).await.unwrap();
             assert_eq!(scan.name, "THE_LIBRARY_CARD");
             assert_eq!(scan.titles.len(), 3);
-            assert_eq!(mk.version(&never).await.as_deref(), Some("MakeMKV v2.0.0 linux(x64-release)"));
+            assert_eq!(
+                mk.version(&never).await.as_deref(),
+                Some("MakeMKV v2.0.0 linux(x64-release)")
+            );
 
             let dir = tempfile::tempdir().unwrap();
             let seen = Mutex::new(Vec::new());
-            let mut progress = |p: crate::video::makemkv::CopyProgress| seen.lock().unwrap().push(p.fraction);
-            let file = mk.copy_title(0, 0, dir.path(), &never, &mut progress).await.unwrap();
+            let mut progress =
+                |p: crate::video::makemkv::CopyProgress| seen.lock().unwrap().push(p.fraction);
+            let file = mk
+                .copy_title(0, 0, dir.path(), &never, &mut progress)
+                .await
+                .unwrap();
             assert!(file.ends_with("THE_LIBRARY_CARD_t00.mkv"));
             assert!(std::fs::metadata(&file).unwrap().len() > 0);
             assert_eq!(seen.lock().unwrap().last(), Some(&1.0));
@@ -578,15 +591,29 @@ mod tests {
             let events = Mutex::new(Vec::new());
             let cancel = AtomicBool::new(false);
             let record = |e| events.lock().unwrap().push(e);
-            let out = rip_film(&job(&[0], true), &tools, &work.path().join("rip"), &cancel, &record)
-                .await
-                .unwrap();
+            let out = rip_film(
+                &job(&[0], true),
+                &tools,
+                &work.path().join("rip"),
+                &cancel,
+                &record,
+            )
+            .await
+            .unwrap();
             // No ffmpeg was given: the master only, and the user is told.
-            let kinds: Vec<_> = out.plan.files.iter().map(|f| (f.kind, f.title.clone())).collect();
+            let kinds: Vec<_> = out
+                .plan
+                .files
+                .iter()
+                .map(|f| (f.kind, f.title.clone()))
+                .collect();
             assert_eq!(
                 kinds,
                 [
-                    (MediaKind::Archive, "Master (lossless MKV): The Library Card".to_owned()),
+                    (
+                        MediaKind::Archive,
+                        "Master (lossless MKV): The Library Card".to_owned()
+                    ),
                     (MediaKind::Archive, "Rip log".to_owned()),
                     (MediaKind::Archive, "Rip details (rip.json)".to_owned()),
                 ]
@@ -595,11 +622,15 @@ mod tests {
             let ItemTarget::New(item) = &out.plan.item else {
                 panic!("a new item");
             };
-            assert_eq!((item.type_slug.as_str(), item.title.as_str(), item.year), ("film", "The Library Card", Some(1999)));
+            assert_eq!(
+                (item.type_slug.as_str(), item.title.as_str(), item.year),
+                ("film", "The Library Card", Some(1999))
+            );
             for file in &out.plan.files {
                 assert_eq!(sha256_file(&file.path).unwrap(), file.sha256);
             }
-            let json = std::fs::read_to_string(out.folder.join("The Library Card.rip.json")).unwrap();
+            let json =
+                std::fs::read_to_string(out.folder.join("The Library Card.rip.json")).unwrap();
             let json: serde_json::Value = serde_json::from_str(&json).unwrap();
             assert_eq!(json["kind"], "film");
             assert_eq!(json["titles"][0]["id"], 0);
@@ -611,7 +642,12 @@ mod tests {
             let log = std::fs::read_to_string(out.folder.join("The Library Card.rip.log")).unwrap();
             assert!(log.contains("Viewing copy: none made."));
             assert!(log.contains("THE_LIBRARY_CARD"));
-            assert!(events.lock().unwrap().contains(&FilmEvent::Finished { title: 0 }));
+            assert!(
+                events
+                    .lock()
+                    .unwrap()
+                    .contains(&FilmEvent::Finished { title: 0 })
+            );
         }
 
         #[tokio::test]
@@ -626,7 +662,14 @@ mod tests {
             };
             let cancel = AtomicBool::new(true);
             cancel.store(true, Ordering::Relaxed);
-            let result = rip_film(&job(&[0], false), &tools, &work.path().join("rip"), &cancel, &|_| {}).await;
+            let result = rip_film(
+                &job(&[0], false),
+                &tools,
+                &work.path().join("rip"),
+                &cancel,
+                &|_| {},
+            )
+            .await;
             assert!(matches!(result, Err(e) if e.is_cancelled()));
         }
 
@@ -649,16 +692,29 @@ mod tests {
             one.titles[0].duration_secs = 2;
             let events = Mutex::new(Vec::new());
             let record = |e| events.lock().unwrap().push(e);
-            let out = rip_film(&one, &tools, &work.path().join("rip"), &AtomicBool::new(false), &record)
-                .await
-                .unwrap();
+            let out = rip_film(
+                &one,
+                &tools,
+                &work.path().join("rip"),
+                &AtomicBool::new(false),
+                &record,
+            )
+            .await
+            .unwrap();
             let video = &out.plan.files[0];
             assert_eq!(video.kind, MediaKind::Video);
             assert!(video.path.extension().is_some_and(|e| e == "webm"));
             assert_eq!(video.duration_ms, Some(2000));
             // What ffprobe says about it: AV1 video, Opus sound, square pixels.
             let probe = std::process::Command::new("ffprobe")
-                .args(["-v", "error", "-show_entries", "stream=codec_name,sample_aspect_ratio,width,height", "-of", "csv=p=0"])
+                .args([
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "stream=codec_name,sample_aspect_ratio,width,height",
+                    "-of",
+                    "csv=p=0",
+                ])
                 .arg(&video.path)
                 .output();
             if let Ok(probe) = probe {
@@ -668,7 +724,13 @@ mod tests {
                 // 720x480 with 32:27 pixels is 16:9: 853 or 854 wide, square.
                 assert!(text.contains("480") && !text.contains("720,480"), "{text}");
             }
-            assert!(events.lock().unwrap().iter().any(|e| matches!(e, FilmEvent::Viewing { .. })));
+            assert!(
+                events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|e| matches!(e, FilmEvent::Viewing { .. }))
+            );
             assert!(out.notes.is_empty());
         }
     }

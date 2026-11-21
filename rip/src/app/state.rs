@@ -2143,7 +2143,10 @@ mod tests {
             title: 0,
             fraction: 0.25,
         }));
-        assert_eq!(state.rip.as_ref().unwrap().rows[0].stage, TrackStage::Encoding);
+        assert_eq!(
+            state.rip.as_ref().unwrap().rows[0].stage,
+            TrackStage::Encoding
+        );
 
         let commands = state.handle(Event::FilmRipped(Box::new(film_output())));
         assert!(matches!(commands.as_slice(), [Command::StartUpload { .. }]));
@@ -2176,11 +2179,25 @@ mod tests {
         let mut state = on_a_film_disc(encoder());
         state.handle(Event::AlbumTitleEdited("  ".into()));
         assert!(state.handle(Event::RipPressed).is_empty());
-        assert!(state.problem.as_ref().unwrap().message.contains("needs a title"));
+        assert!(
+            state
+                .problem
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("needs a title")
+        );
         state.handle(Event::AlbumTitleEdited("A Film".into()));
         state.handle(Event::FilmTitleToggled(0));
         assert!(state.handle(Event::RipPressed).is_empty());
-        assert!(state.problem.as_ref().unwrap().message.contains("No title is ticked"));
+        assert!(
+            state
+                .problem
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("No title is ticked")
+        );
         assert_eq!(state.screen, Screen::Disc);
     }
 

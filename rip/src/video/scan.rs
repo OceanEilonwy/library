@@ -131,7 +131,9 @@ impl DiscScan {
                     });
                     match id {
                         attr::NAME => t.name = value,
-                        attr::DURATION => t.duration_secs = robot::parse_duration(&value).unwrap_or(0),
+                        attr::DURATION => {
+                            t.duration_secs = robot::parse_duration(&value).unwrap_or(0)
+                        }
                         attr::SIZE_BYTES => t.size_bytes = value.trim().parse().unwrap_or(0),
                         attr::CHAPTERS => t.chapters = value.trim().parse().unwrap_or(0),
                         attr::SOURCE_FILE => t.source = value,
@@ -206,7 +208,10 @@ pub fn clean_name(name: &str) -> String {
         .map(|word| {
             let mut chars = word.chars();
             match chars.next() {
-                Some(first) => first.to_uppercase().chain(chars.flat_map(char::to_lowercase)).collect(),
+                Some(first) => first
+                    .to_uppercase()
+                    .chain(chars.flat_map(char::to_lowercase))
+                    .collect(),
                 None => String::new(),
             }
         })

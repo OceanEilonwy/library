@@ -143,10 +143,12 @@ fn connect_callbacks(window: &MainWindow, sender: &EventSender) {
     ));
     forward!(on_item_chosen, |value| Event::ItemChosen(index(value)));
     forward!(on_rip, || Event::RipPressed);
-    forward!(on_film_title_toggled, |value| Event::FilmTitleToggled(index(
-        value
-    )));
-    forward!(on_film_viewing_copy_toggled, || Event::FilmViewingCopyToggled);
+    forward!(on_film_title_toggled, |value| Event::FilmTitleToggled(
+        index(value)
+    ));
+    forward!(on_film_viewing_copy_toggled, || {
+        Event::FilmViewingCopyToggled
+    });
     forward!(on_upload_anyway, || Event::UploadAnywayPressed);
     forward!(on_rip_again, || Event::RipAgainPressed);
     forward!(on_back_to_disc, || Event::BackToDiscPressed);
@@ -312,7 +314,9 @@ fn apply(window: &MainWindow, view: ViewModel) {
             selected: row.selected,
         })
         .collect();
-    sync(window.get_film_titles(), titles, |m| window.set_film_titles(m));
+    sync(window.get_film_titles(), titles, |m| {
+        window.set_film_titles(m)
+    });
     window.set_film_can_choose_copy(view.film_can_choose_copy);
     window.set_film_viewing_copy(view.film_viewing_copy);
 

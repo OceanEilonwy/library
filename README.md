@@ -22,7 +22,8 @@ hyper, maud templates, htmx 4) with everything in a single SQLite file.
   (each approved by the librarian), playlists, favourites and offline
   downloads. See [The Player](#the-player).
 - **Library Rip**: a small desktop app that copies CDs into the library with
-  checked, archival-quality rips. See [Library Rip](#library-rip).
+  checked, archival-quality rips, and DVDs as a lossless MKV plus a WebM copy
+  for the Player (through your own MakeMKV and ffmpeg). See [Library Rip](#library-rip).
 
 ## Running it
 
@@ -288,13 +289,15 @@ default).
 Library Rip (in `rip/`, its own Cargo package) is a desktop app that turns
 a CD into an exact, verified copy (FLAC per track, checked against
 AccurateRip and CTDB, with a cue sheet and a rip log) and uploads it to an
-entry in the library. The contract between it and the server is
-`docs/rip.md`; how to build it is in `rip/README.md`.
+entry in the library. A DVD is copied with the MakeMKV you installed into a
+lossless MKV (kept as an archive file), and the ffmpeg you installed makes a
+WebM (AV1 and Opus) copy the Player plays. Blu-ray is untested. The
+contract between it and the server is `docs/rip.md`; how to build it is in `rip/README.md`.
 
 - **Get it**: `/ripper` ("Get Library Rip", linked from the Librarian's desk
   and the upload studio) lists the builds you copy into
   `<data_dir>/downloads/library-rip/` (or `[ripper] downloads_dir`), with each
-  file's size and SHA-256, and explains how to install MakeMKV for films.
+  file's size and SHA-256, and explains how to install MakeMKV and ffmpeg for films.
 - **Connect it**: in Library Rip, type the library's address and press
   Connect. Your browser opens `/connect`; unlock as the librarian and say
   **Yes, connect**. If the browser is on another device, Library Rip shows a

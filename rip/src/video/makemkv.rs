@@ -114,10 +114,7 @@ impl MakeMkv {
 
     /// Which `disc:N` is the drive at `device`: the drive whose device
     /// matches, else the only one with a disc in it.
-    pub fn pick_drive<'a>(
-        drives: &'a [MakeMkvDrive],
-        device: &str,
-    ) -> Result<&'a MakeMkvDrive> {
+    pub fn pick_drive<'a>(drives: &'a [MakeMkvDrive], device: &str) -> Result<&'a MakeMkvDrive> {
         let same = |a: &str, b: &str| {
             let a = a.trim_end_matches(['\\', '/']);
             let b = b.trim_end_matches(['\\', '/']);
@@ -269,7 +266,13 @@ impl Messages {
 /// Finds `makemkvcon` on this computer.
 pub async fn discover() -> Option<MakeMkv> {
     let env = std::env::var_os("LIBRARY_RIP_MAKEMKVCON").map(PathBuf::from);
-    discover_with(env, std::env::var_os("PATH"), &standard_places(), flatpak_installed).await
+    discover_with(
+        env,
+        std::env::var_os("PATH"),
+        &standard_places(),
+        flatpak_installed,
+    )
+    .await
 }
 
 /// [`discover`] with the places to look given, for tests.
@@ -357,7 +360,13 @@ mod tests {
 
     #[tokio::test]
     async fn the_environment_wins() {
-        let found = discover_with(Some("/x/mk".into()), Some("/nowhere".into()), &[], no_flatpak).await;
+        let found = discover_with(
+            Some("/x/mk".into()),
+            Some("/nowhere".into()),
+            &[],
+            no_flatpak,
+        )
+        .await;
         assert_eq!(found, Some(MakeMkv::at("/x/mk")));
     }
 
@@ -369,7 +378,9 @@ mod tests {
         let found = discover_with(None, Some(dir.path().into()), &[], no_flatpak).await;
         assert_eq!(found, Some(MakeMkv::at(&program)));
 
-        let found = discover_with(None, None, &[], || async { true }).await.unwrap();
+        let found = discover_with(None, None, &[], || async { true })
+            .await
+            .unwrap();
         assert!(found.flatpak);
         assert_eq!(found.describe(), "Flatpak com.makemkv.MakeMKV");
 

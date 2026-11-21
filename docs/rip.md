@@ -15,17 +15,20 @@ is wrong. Licence: AGPL-3.0-or-later, like the rest of the repository.
 
 ## Stages
 
-1. **Stage 1 (now):** connect handshake + API keys, ripper download page,
+1. **Stage 1 (done):** connect handshake + API keys, ripper download page,
    audio CD ripping end to end (secure read, AccurateRip + CTDB verification,
    FLAC + cue + log, MusicBrainz disc-ID match, cover art, upload).
-2. **Stage 2:** DVD via `makemkvcon`: lossless MKV master, AV1/Opus WebM
-   viewing copies (1080p, plus 2160p when the source is UHD), renditions on
-   the server, quality picker in the Player.
+2. **Stage 2 (DVD ripping done; renditions and the picker not):** DVD via
+   `makemkvcon`: lossless MKV master, one AV1/Opus WebM viewing copy (up to
+   1080p, made by the user's `ffmpeg`), uploaded to a new Film entry; see
+   "Film disc rip (stage 2, as built)". Not built yet: a 2160p copy for UHD
+   sources, renditions on the server, a quality picker in the Player, adding
+   to an existing entry, subtitles in the viewing copy.
 3. **Stage 3:** Blu-ray / UHD via `makemkvcon`, HDR10 kept in the 2160p copy
    and tone-mapped to SDR for 1080p, picture-subtitle OCR (Tesseract) with a
    review step, forced subtitles burned in.
 
-Decided: video ripping uses only a user-installed `makemkvcon` (never bundled;
+Decided: video ripping uses only a user-installed `makemkvcon` and `ffmpeg` (never bundled;
 DVD ripping in MakeMKV is free; Blu-ray needs the user's MakeMKV key). There is
 no libdvdcss path and no H.264/MP4 fallback. If `makemkvcon` is missing the app
 explains how to install it per OS (Flathub `com.makemkv.MakeMKV`, the MakeMKV
@@ -196,6 +199,57 @@ librarian, downloadable. `sha256` is stored for every uploaded file.
   log, cue and `rip.json` as `archive`. Resumable per file (skips files
   whose `sha256` already exists on the item).
 
+## Film disc rip (stage 2, as built)
+
+- **Tools:** `makemkvcon` is found through `LIBRARY_RIP_MAKEMKVCON`, the
+  `PATH` (`makemkvcon`, `makemkvcon64`), the Flathub app
+  (`flatpak run --device=all --filesystem=<work folder>
+  --command=makemkvcon com.makemkv.MakeMKV`), then `/usr/bin`,
+  `/usr/local/bin`, `/opt/makemkv/bin`, the macOS app bundle and `Program
+  Files\MakeMKV`. `ffmpeg` through `LIBRARY_RIP_FFMPEG` or the `PATH`, and
+  must list `libopus` and `libsvtav1` (preferred) or `libaom-av1` among its
+  encoders. Missing MakeMKV is an error with install help; missing or unfit
+  ffmpeg only removes the viewing copy ("archive the master only").
+- **Which disc:** the audio-CD path runs first. A disc with no audio tracks
+  (`DriveError::NoAudio`) goes to MakeMKV: `makemkvcon -r --cache=1 info
+  disc:9999` lists its drives (`DRV` lines); the one whose device matches
+  the app's drive, else the only drive holding a disc, is `disc:N`; then
+  `makemkvcon -r info disc:N` gives the disc and titles (`CINFO`, `TINFO`,
+  `SINFO` lines; MakeMKV's own default minimum title length applies). Linux
+  MakeMKV needs the `sg` kernel module to see drives at all.
+- **Copy:** `makemkvcon -r --progress=-same mkv disc:N <title> <folder>` per
+  ticked title (default: the longest), progress from `PRGV`, cancel kills
+  the process group (Windows: `taskkill /T`). The MKV is renamed
+  `<Film>.mkv` (`<Film> (title N).mkv` when several).
+- **Viewing copy:** `ffmpeg … -map 0:v:0 -map 0:a? -sn -vf
+  yadif=deint=interlaced,scale=trunc(iw*sar/2)*2:…,setsar=1,scale=…≤1920x1080
+  -c:v libsvtav1 -crf 30 -preset 6 (libaom-av1: -crf 32 -b:v 0 -cpu-used 6)
+  -c:a libopus -b:a 128k -ac 2` to `<Film>.webm`: only frames flagged
+  interlaced are de-interlaced, non-square pixels become square, nothing is
+  scaled up, soft subtitles are dropped (the master keeps them), progress
+  from `-progress pipe:1`. No H.264/MP4 fallback.
+- **Upload:** a new item (`typeSlug` from `GET /api/rip/types`: `film`, else
+  the first type whose lookup is `film`; `title` and `year` as confirmed),
+  then the WebM(s) as `video` (`title`, `duration_ms` from the disc, `sha256`),
+  then the masters (`Master (lossless MKV): <name>`), the log
+  (`<Film>.rip.log`) and `<Film>.rip.json` as `archive`. The same resumable
+  upload as music: files whose `sha256` is on the item are skipped.
+  `rip.json` for a film (`kind: "film"`, `formatVersion: 1`) holds the disc,
+  each title with its streams, and each file's SHA-256.
+- **Screens:** the Disc screen shows the titles (tick to copy), title, year
+  and "Also make a viewing copy"; the Rip screen has a row per ticked title
+  ("Copying 42%", then "Making viewing copy 17%"); Upload and Done are the
+  music ones. Cancel stops MakeMKV or ffmpeg and returns to the Disc screen.
+- **Not done:** Blu-ray/UHD specifics (untested; MakeMKV's errors are passed
+  on), adding to an existing entry, cover art, MakeMKV's own progress detail
+  beyond a percentage, 2160p copies, server renditions, subtitle tracks in
+  the viewing copy.
+- **Tests:** `tests/data/fake-makemkvcon` stands in for `makemkvcon`;
+  `tests/e2e_film.rs` runs `library-rip headless-film` against the real
+  server and plays the viewing copy back through the Player API. The sample
+  MakeMKV output in `tests/data` was written from MakeMKV's documented
+  robot-mode format, not captured from a real disc.
+
 ## Ripper UI (stage 1)
 
 Screens: **Connect** (URL → browser handshake → "Connected to The Library as
@@ -223,7 +277,7 @@ Plain English, woodworking-free, library tone. Works with keyboard only.
 - `/ripper` page on the htmx site ("Get Library Rip"): detects the visitor's
   OS, lists builds found in `<data_dir>/downloads/library-rip/` (or
   `[ripper] downloads_dir`), each with size and SHA-256, plus the source
-  link; shows how to install MakeMKV for film discs. Linked from the
+  link; shows how to install MakeMKV and ffmpeg for film discs. Linked from the
   Librarian's desk and the upload studio.
 - Rate limiting on token/device endpoints; codes and device codes expire.
 

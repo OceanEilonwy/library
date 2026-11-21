@@ -61,10 +61,7 @@ pub async fn run(
     });
     let mut lines = stdout.map(|out| BufReader::new(out).lines());
     let mut stopped = false;
-    loop {
-        let Some(reader) = lines.as_mut() else {
-            break;
-        };
+    while let Some(reader) = lines.as_mut() {
         tokio::select! {
             line = reader.next_line() => match line {
                 Ok(Some(line)) => on_line(&line),
@@ -144,9 +141,14 @@ mod tests {
     async fn lines_arrive_and_the_exit_status_is_kept() {
         let cancel = AtomicBool::new(false);
         let mut seen = Vec::new();
-        let done = run(shell("echo one; echo two; echo oops >&2; exit 3"), "sh", &cancel, |l| {
-            seen.push(l.to_owned());
-        })
+        let done = run(
+            shell("echo one; echo two; echo oops >&2; exit 3"),
+            "sh",
+            &cancel,
+            |l| {
+                seen.push(l.to_owned());
+            },
+        )
         .await
         .unwrap();
         assert_eq!(seen, ["one", "two"]);
@@ -164,7 +166,13 @@ mod tests {
             flag.store(true, Ordering::Relaxed);
         });
         let started = std::time::Instant::now();
-        let result = run(shell("sleep 30 & sleep 30; echo late"), "sh", &cancel, |_| {}).await;
+        let result = run(
+            shell("sleep 30 & sleep 30; echo late"),
+            "sh",
+            &cancel,
+            |_| {},
+        )
+        .await;
         assert!(matches!(result, Err(VideoError::Cancelled)));
         assert!(started.elapsed() < Duration::from_secs(10));
     }

@@ -2022,6 +2022,182 @@ mod tests {
         assert!(state.problem.is_none());
     }
 
+    fn film_scan(viewing: ViewingSupport) -> FilmScan {
+        FilmScan {
+            disc_index: 0,
+            drive_name: "FAKE DVD DRIVE".into(),
+            disc: crate::video::scan::DiscScan::from_lines(
+                include_str!("../../tests/data/makemkv-info-dvd.txt").lines(),
+            ),
+            viewing,
+        }
+    }
+
+    fn film_output() -> FilmOutput {
+        let file = |title: &str, kind| UploadFile {
+            kind,
+            title: title.into(),
+            disc: 1,
+            track: None,
+            duration_ms: None,
+            sha256: Sha256Digest([2; 32]),
+            path: PathBuf::from(format!("/tmp/{title}")),
+        };
+        FilmOutput {
+            folder: PathBuf::from("/tmp/film"),
+            kept: None,
+            plan: UploadPlan {
+                item: ItemTarget::New(NewItem::default()),
+                cover: None,
+                files: vec![
+                    file("The Library Card", MediaKind::Video),
+                    file("Master", MediaKind::Archive),
+                ],
+            },
+            notes: vec!["A note.".into()],
+        }
+    }
+
+    fn on_a_film_disc(viewing: ViewingSupport) -> AppState {
+        let mut state = AppState::default();
+        state.handle(Event::Connected(who()));
+        state.handle(Event::DrivesListed(vec![drive()]));
+        state.handle(Event::FilmScanning);
+        state.handle(Event::FilmDetected(Box::new(film_scan(viewing))));
+        state
+    }
+
+    fn encoder() -> ViewingSupport {
+        ViewingSupport::Available {
+            encoder: "libsvtav1".into(),
+        }
+    }
+
+    #[test]
+    fn a_film_disc_is_ready_with_the_longest_title_ticked_and_no_musicbrainz() {
+        let mut state = AppState::default();
+        state.handle(Event::Connected(who()));
+        state.handle(Event::DrivesListed(vec![drive()]));
+        assert!(state.is_busy(Task::Disc));
+        state.handle(Event::FilmScanning);
+        assert!(state.film_scanning);
+        let commands = state.handle(Event::FilmDetected(Box::new(film_scan(encoder()))));
+        assert!(commands.is_empty());
+        assert!(!state.is_busy(Task::Disc));
+        assert!(!state.is_busy(Task::Releases));
+        assert_eq!(state.disc_phase, DiscPhase::Ready);
+        assert_eq!(state.release.title, "The Library Card");
+        let film = state.film.as_ref().unwrap();
+        assert_eq!(film.selected, BTreeSet::from([0]));
+        assert!(film.viewing_copy);
+
+        // Ticking is a toggle, by position in the list.
+        state.handle(Event::FilmTitleToggled(1));
+        state.handle(Event::FilmTitleToggled(0));
+        assert_eq!(state.film.as_ref().unwrap().selected, BTreeSet::from([1]));
+        state.handle(Event::FilmViewingCopyToggled);
+        assert!(!state.film.as_ref().unwrap().viewing_copy);
+
+        // Looking again forgets the film.
+        state.handle(Event::RefreshPressed);
+        assert!(state.film.is_none());
+        assert!(!state.film_scanning);
+    }
+
+    #[test]
+    fn without_ffmpeg_there_is_no_viewing_copy_to_choose() {
+        let mut state = on_a_film_disc(ViewingSupport::Unavailable {
+            reason: "ffmpeg is not installed.".into(),
+        });
+        assert!(!state.film.as_ref().unwrap().viewing_copy);
+        state.handle(Event::FilmViewingCopyToggled);
+        assert!(!state.film.as_ref().unwrap().viewing_copy);
+    }
+
+    #[test]
+    fn a_film_rip_runs_uploads_and_finishes() {
+        let mut state = on_a_film_disc(encoder());
+        state.handle(Event::YearEdited("1999".into()));
+        let commands = state.handle(Event::RipPressed);
+        let [Command::StartFilmRip(job)] = commands.as_slice() else {
+            panic!("expected a film rip, got {commands:?}");
+        };
+        assert_eq!(job.name, "The Library Card");
+        assert_eq!(job.year, Some(1999));
+        assert_eq!(job.disc_index, 0);
+        assert_eq!(job.titles.iter().map(|t| t.id).collect::<Vec<_>>(), [0]);
+        assert!(job.viewing_copy);
+        assert_eq!(state.screen, Screen::Rip);
+        assert!(state.is_busy(Task::Rip));
+        assert_eq!(state.rip.as_ref().unwrap().rows.len(), 1);
+
+        state.handle(Event::FilmProgress(FilmEvent::Copying {
+            title: 0,
+            fraction: 0.5,
+        }));
+        assert_eq!(
+            state.rip.as_ref().unwrap().rows[0].stage,
+            TrackStage::Reading { pass: 1 }
+        );
+        state.handle(Event::FilmProgress(FilmEvent::Viewing {
+            title: 0,
+            fraction: 0.25,
+        }));
+        assert_eq!(state.rip.as_ref().unwrap().rows[0].stage, TrackStage::Encoding);
+
+        let commands = state.handle(Event::FilmRipped(Box::new(film_output())));
+        assert!(matches!(commands.as_slice(), [Command::StartUpload { .. }]));
+        assert_eq!(state.screen, Screen::Upload);
+        assert_eq!(state.upload.as_ref().unwrap().rows.len(), 2);
+
+        // A retry after the item exists goes to the same item.
+        state.handle(Event::Progress(PipelineEvent::ItemReady {
+            id: 9,
+            url: "http://library.test/items/9".into(),
+        }));
+        assert_eq!(
+            state.film_output.as_ref().unwrap().plan.item,
+            ItemTarget::Existing { id: 9 }
+        );
+        state.handle(Event::UploadFinished(UploadOutput {
+            item_id: 9,
+            item_url: "http://library.test/items/9".into(),
+            uploaded: 2,
+            skipped: 0,
+            cover_problem: None,
+        }));
+        assert_eq!(state.screen, Screen::Done);
+        assert_eq!(state.done.as_ref().unwrap().notes, ["A note."]);
+        assert!(state.film_output.is_none());
+    }
+
+    #[test]
+    fn a_film_needs_a_title_and_a_ticked_title() {
+        let mut state = on_a_film_disc(encoder());
+        state.handle(Event::AlbumTitleEdited("  ".into()));
+        assert!(state.handle(Event::RipPressed).is_empty());
+        assert!(state.problem.as_ref().unwrap().message.contains("needs a title"));
+        state.handle(Event::AlbumTitleEdited("A Film".into()));
+        state.handle(Event::FilmTitleToggled(0));
+        assert!(state.handle(Event::RipPressed).is_empty());
+        assert!(state.problem.as_ref().unwrap().message.contains("No title is ticked"));
+        assert_eq!(state.screen, Screen::Disc);
+    }
+
+    #[test]
+    fn stopping_a_film_rip_goes_back_to_the_disc() {
+        let mut state = on_a_film_disc(encoder());
+        state.handle(Event::RipPressed);
+        assert_eq!(
+            state.handle(Event::CancelPressed),
+            vec![Command::Cancel(Task::Rip)]
+        );
+        state.handle(Event::Cancelled(Task::Rip));
+        assert_eq!(state.screen, Screen::Disc);
+        assert!(state.film.is_some());
+        assert!(state.problem.as_ref().unwrap().message.contains("stopped"));
+    }
+
     #[test]
     fn disc_flow_reads_the_disc_and_loads_the_first_match() {
         let mut state = AppState::default();

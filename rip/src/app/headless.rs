@@ -153,6 +153,167 @@ impl HeadlessError {
     }
 }
 
+/// Options for [`run_film`].
+#[derive(Clone, Debug)]
+pub struct HeadlessFilmOptions {
+    /// Library base address (normalised with a trailing slash).
+    pub library: Url,
+    /// Use the device-code flow instead of the browser.
+    pub device_code: bool,
+    /// The film's name (default: the disc's name, cleaned).
+    pub name: Option<String>,
+    /// The year.
+    pub year: Option<u16>,
+    /// MakeMKV title to copy (default: the longest).
+    pub title: Option<usize>,
+    /// Make the WebM viewing copy (needs ffmpeg with AV1 and Opus).
+    pub viewing_copy: bool,
+    /// Also keep the rip in this folder.
+    pub keep: Option<PathBuf>,
+    /// Keep the connection in this file between runs.
+    pub key_file: Option<PathBuf>,
+    /// Outside services (unused by films, but the backend wants them).
+    pub endpoints: Endpoints,
+    /// Where the rip is written before upload.
+    pub work_root: PathBuf,
+}
+
+/// Rips the film disc MakeMKV sees (`LIBRARY_RIP_MAKEMKVCON` points a test
+/// at a stand-in) and uploads it: connect, scan, copy, make the viewing
+/// copy, upload.
+pub async fn run_film(
+    options: &HeadlessFilmOptions,
+    report: Reporter,
+    cancel: Arc<AtomicBool>,
+) -> Result<HeadlessOutcome, HeadlessError> {
+    let keys: Box<dyn KeyStore> = match &options.key_file {
+        Some(path) => Box::new(FileStore::new(path.clone())),
+        None => Box::new(MemoryKeyStore::default()),
+    };
+    let settings = Settings {
+        keep_local_copy: options.keep.clone(),
+        ..Settings::default()
+    };
+    let backend = LiveBackend::new(LiveConfig {
+        endpoints: options.endpoints.clone(),
+        drives: Arc::new(FakeDriveProvider::new(PathBuf::new())),
+        keys,
+        browser: Arc::new(PrintOnlyBrowser),
+        settings_path: None,
+        settings: settings.clone(),
+        work_root: options.work_root.clone(),
+    })
+    .map_err(HeadlessError::Connect)?;
+    let (events, receiver) = EventSender::channel();
+    let printer = tokio::spawn(print_events(receiver, Arc::clone(&report)));
+    let result = film_flow(&backend, options, settings, &events, &report, &cancel).await;
+    drop(events);
+    let _ = tokio::time::timeout(Duration::from_secs(1), printer).await;
+    result
+}
+
+async fn film_flow(
+    backend: &LiveBackend,
+    options: &HeadlessFilmOptions,
+    settings: Settings,
+    events: &EventSender,
+    report: &Reporter,
+    cancel: &Arc<AtomicBool>,
+) -> Result<HeadlessOutcome, HeadlessError> {
+    let connect_options = HeadlessOptions {
+        library: options.library.clone(),
+        fake_disc: PathBuf::new(),
+        device_code: options.device_code,
+        offset: None,
+        read_mode: ReadMode::Secure,
+        keep: None,
+        upload_with_errors: false,
+        key_file: options.key_file.clone(),
+        endpoints: options.endpoints.clone(),
+        work_root: options.work_root.clone(),
+    };
+    let who = until_cancelled(cancel, connect(backend, &connect_options, events))
+        .await?
+        .map_err(|e| HeadlessError::from_stage(HeadlessError::Connect, e))?;
+    report(&format!(
+        "Connected to {} as {}.",
+        who.library.name, who.key_name
+    ));
+
+    let device = "film-disc".to_owned();
+    let scan = backend
+        .scan_film(device.clone())
+        .await
+        .map_err(|e| HeadlessError::from_stage(HeadlessError::Disc, e))?;
+    report(&format!(
+        "Disc: {} ({}), {} titles (drive {}).",
+        scan.disc.name,
+        scan.disc.kind,
+        scan.disc.titles.len(),
+        scan.drive_name
+    ));
+    for title in &scan.disc.titles {
+        report(&format!("Title {}: {}", title.id, title.summary()));
+    }
+    let chosen = match options.title {
+        Some(id) => scan.disc.titles.iter().find(|t| t.id == id),
+        None => scan.disc.main_title(),
+    }
+    .cloned()
+    .ok_or_else(|| {
+        HeadlessError::Disc(AppError::Video(crate::video::VideoError::NoTitles))
+    })?;
+    let name = options.name.clone().unwrap_or_else(|| {
+        crate::video::scan::clean_name(if scan.disc.name.is_empty() {
+            &scan.disc.volume
+        } else {
+            &scan.disc.name
+        })
+    });
+    report(&format!("Film: {name} (title {}).", chosen.id));
+    let viewing_copy = options.viewing_copy
+        && matches!(
+            scan.viewing,
+            super::film::ViewingSupport::Available { .. }
+        );
+    if options.viewing_copy && !viewing_copy {
+        report("No viewing copy: ffmpeg with AV1 and Opus was not found.");
+    }
+    let job = super::film::FilmJob {
+        device,
+        disc_index: scan.disc_index,
+        disc: scan.disc.clone(),
+        name,
+        year: options.year,
+        titles: vec![chosen],
+        viewing_copy,
+        settings,
+    };
+    let output = backend
+        .rip_film(job, events.clone(), Arc::clone(cancel))
+        .await
+        .map_err(|e| HeadlessError::from_stage(HeadlessError::Rip, e))?;
+    report(&format!("Uploading {} files…", output.plan.files.len()));
+    let super::film::FilmOutput {
+        folder,
+        kept,
+        plan,
+        notes,
+    } = output;
+    let uploaded = backend
+        .upload(plan, folder, events.clone(), Arc::clone(cancel))
+        .await
+        .map_err(|e| HeadlessError::from_stage(HeadlessError::Upload, e))?;
+    Ok(HeadlessOutcome {
+        item_url: uploaded.item_url,
+        uploaded: uploaded.uploaded,
+        skipped: uploaded.skipped,
+        kept,
+        read_issues: Vec::new(),
+        notes,
+    })
+}
+
 /// A line of progress for the operator.
 pub type Reporter = Arc<dyn Fn(&str) + Send + Sync>;
 
@@ -418,6 +579,12 @@ pub fn describe(event: &Event) -> Option<String> {
             "On the library, open {verification_uri} and type this code: {user_code}"
         )),
         Event::Progress(progress) => describe_progress(progress),
+        Event::FilmProgress(super::film::FilmEvent::Finished { title }) => {
+            Some(format!("Title {title}: done."))
+        }
+        Event::FilmProgress(super::film::FilmEvent::Copying { title, fraction }) if *fraction >= 1.0 => {
+            Some(format!("Title {title}: copied."))
+        }
         _ => None,
     }
 }

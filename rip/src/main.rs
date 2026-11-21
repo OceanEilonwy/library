@@ -54,6 +54,10 @@ enum Command {
     /// 130 stopped with Ctrl-C.
     #[cfg(feature = "testsupport")]
     Headless(Box<HeadlessArgs>),
+    /// Rip the film disc MakeMKV sees (point LIBRARY_RIP_MAKEMKVCON at a
+    /// stand-in) and upload it without a window.
+    #[cfg(feature = "testsupport")]
+    HeadlessFilm(Box<HeadlessFilmArgs>),
     /// Write a simulated disc of sine tones into a folder.
     #[cfg(feature = "testsupport")]
     MakeFakeDisc {
@@ -95,6 +99,35 @@ enum Command {
         #[arg(long = "pressing", value_name = "OFFSET[:CONFIDENCE]", allow_hyphen_values = true, value_parser = parse_pressing)]
         pressings: Vec<library_rip::mockservices::MockPressing>,
     },
+}
+
+#[cfg(feature = "testsupport")]
+#[derive(Debug, clap::Args)]
+struct HeadlessFilmArgs {
+    /// The library's address, e.g. http://localhost:8080
+    #[arg(long, value_name = "URL")]
+    library: String,
+    /// Connect with a code typed on the library instead of a browser page.
+    #[arg(long)]
+    device_code: bool,
+    /// The film's name (default: the disc's name, cleaned).
+    #[arg(long)]
+    name: Option<String>,
+    /// The film's year.
+    #[arg(long)]
+    year: Option<u16>,
+    /// MakeMKV title to copy (default: the longest).
+    #[arg(long)]
+    title: Option<usize>,
+    /// Archive the master only: no WebM viewing copy.
+    #[arg(long)]
+    master_only: bool,
+    /// Also keep the rip in this folder.
+    #[arg(long, value_name = "DIR")]
+    keep: Option<PathBuf>,
+    /// Keep the connection in this file so later runs need no approval.
+    #[arg(long, value_name = "FILE")]
+    key_file: Option<PathBuf>,
 }
 
 #[cfg(feature = "testsupport")]
@@ -174,6 +207,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             .context("Library Rip could not start")
             .map(|()| ExitCode::SUCCESS),
         Some(Command::Headless(args)) => run_headless(*args),
+        Some(Command::HeadlessFilm(args)) => run_headless_film(*args),
         Some(Command::MakeFakeDisc {
             dir,
             tracks,
@@ -255,6 +289,51 @@ fn run_headless(args: HeadlessArgs) -> anyhow::Result<ExitCode> {
             }
             if let Some(kept) = &outcome.kept {
                 println!("A copy is kept in {}", kept.display());
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(error) => {
+            let problem = error.problem();
+            eprintln!("{}\n{}", problem.message, problem.next_step);
+            Ok(ExitCode::from(error.exit_code()))
+        }
+    }
+}
+
+#[cfg(feature = "testsupport")]
+fn run_headless_film(args: HeadlessFilmArgs) -> anyhow::Result<ExitCode> {
+    let library = match library_address(&args.library) {
+        Ok(url) => url,
+        Err(problem) => {
+            eprintln!("{} {}", problem.message, problem.next_step);
+            return Ok(ExitCode::from(2));
+        }
+    };
+    let options = headless::HeadlessFilmOptions {
+        library,
+        device_code: args.device_code,
+        name: args.name,
+        year: args.year,
+        title: args.title,
+        viewing_copy: !args.master_only,
+        keep: args.keep,
+        key_file: args.key_file,
+        endpoints: Endpoints::official().context("the built-in service addresses are invalid")?,
+        work_root: std::env::temp_dir().join(format!("library-rip-{}", std::process::id())),
+    };
+    let runtime = tokio::runtime::Runtime::new().context("could not start the runtime")?;
+    let cancel = Arc::new(AtomicBool::new(false));
+    let report: headless::Reporter = Arc::new(|line: &str| println!("{line}"));
+    let outcome = runtime.block_on(headless::run_film(&options, report, cancel));
+    let _ = std::fs::remove_dir(&options.work_root);
+    match outcome {
+        Ok(outcome) => {
+            println!(
+                "Done: {} files uploaded ({} already there) to {}",
+                outcome.uploaded, outcome.skipped, outcome.item_url
+            );
+            for note in &outcome.notes {
+                println!("Note: {note}");
             }
             Ok(ExitCode::SUCCESS)
         }

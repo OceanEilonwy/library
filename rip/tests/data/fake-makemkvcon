@@ -1,0 +1,49 @@
+#!/bin/sh
+# A stand-in for makemkvcon in tests: prints the robot-mode lines MakeMKV is
+# documented to print for one DVD drive, and "copies" a title by writing a
+# tiny real MKV with ffmpeg (or a few bytes when there is no ffmpeg).
+# FAKE_MAKEMKV_INFO: the info output to give (default: makemkv-info-dvd.txt
+# next to this script). FAKE_MAKEMKV_FAIL=1: act as if the disc cannot be read.
+here=$(cd "$(dirname "$0")" && pwd)
+info=${FAKE_MAKEMKV_INFO:-$here/makemkv-info-dvd.txt}
+echo 'MSG:1005,0,1,"MakeMKV v2.0.0 linux(x64-release) started","%1 started","MakeMKV v2.0.0 linux(x64-release)"'
+for arg in "$@"; do
+	case "$arg" in
+	info) mode=info ;;
+	mkv) mode=mkv ;;
+	disc:*) disc=${arg#disc:} ;;
+	esac
+done
+if [ -n "$FAKE_MAKEMKV_FAIL" ]; then
+	echo 'MSG:5010,0,0,"Failed to open disc","Failed to open disc"'
+	exit 1
+fi
+case "$mode" in
+info)
+	if [ "$disc" = 9999 ]; then
+		echo 'DRV:0,2,999,12,"FAKE DVD DRIVE","THE_LIBRARY_CARD","/dev/fake-sr0"'
+		echo 'DRV:1,256,999,0,"","",""'
+		echo 'MSG:5010,0,0,"Failed to open disc","Failed to open disc"'
+		exit 0
+	fi
+	cat "$info"
+	;;
+mkv)
+	# makemkvcon [options] mkv disc:N TITLE DIR
+	for arg in "$@"; do last2=$last1; last1=$arg; title=$last2; dir=$last1; done
+	name=$(printf 'THE_LIBRARY_CARD_t%02d.mkv' "$title")
+	echo 'PRGC:5017,0,"Saving to MKV file"'
+	echo 'PRGV:0,0,65536'
+	if command -v ffmpeg >/dev/null 2>&1; then
+		ffmpeg -hide_banner -loglevel error -y \
+			-f lavfi -i "testsrc=duration=2:size=720x480:rate=25" \
+			-f lavfi -i "sine=frequency=440:duration=2" \
+			-vf setsar=32/27 -c:v mpeg2video -c:a ac3 -shortest "$dir/$name" || exit 1
+	else
+		head -c 4096 /dev/urandom >"$dir/$name"
+	fi
+	echo 'PRGV:32768,32768,65536'
+	echo 'PRGV:65536,65536,65536'
+	echo 'MSG:5036,0,1,"Copy complete. 1 titles saved.","Copy complete. %1 titles saved.","1"'
+	;;
+esac

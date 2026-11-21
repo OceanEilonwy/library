@@ -473,6 +473,8 @@ fn rip_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn viewing_support_explains_what_is_missing() {
@@ -506,5 +508,168 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.join("a.rip.log").is_file());
         assert!(second.ends_with("A_ Film (2)"));
+    }
+
+    #[cfg(unix)]
+    mod with_a_stand_in_makemkv {
+        use super::*;
+        use crate::video::scan::DiscScan;
+
+        fn fake() -> MakeMkv {
+            MakeMkv::at(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/fake-makemkvcon"))
+        }
+
+        fn disc() -> DiscScan {
+            DiscScan::from_lines(
+                include_str!("../../tests/data/makemkv-info-dvd.txt").lines(),
+            )
+        }
+
+        fn job(titles: &[usize], viewing_copy: bool) -> FilmJob {
+            let disc = disc();
+            FilmJob {
+                device: "/dev/fake-sr0".into(),
+                disc_index: 0,
+                titles: disc
+                    .titles
+                    .iter()
+                    .filter(|t| titles.contains(&t.id))
+                    .cloned()
+                    .collect(),
+                disc,
+                name: "The Library Card".into(),
+                year: Some(1999),
+                viewing_copy,
+                settings: Settings::default(),
+            }
+        }
+
+        #[tokio::test]
+        async fn the_stand_in_is_found_scanned_and_copied() {
+            let never = AtomicBool::new(false);
+            let mk = fake();
+            let drives = mk.drives(&never).await.unwrap();
+            assert_eq!(drives.len(), 1);
+            let drive = MakeMkv::pick_drive(&drives, "/dev/sr0").unwrap();
+            let scan = mk.scan(drive.index, &never).await.unwrap();
+            assert_eq!(scan.name, "THE_LIBRARY_CARD");
+            assert_eq!(scan.titles.len(), 3);
+            assert_eq!(mk.version(&never).await.as_deref(), Some("MakeMKV v2.0.0 linux(x64-release)"));
+
+            let dir = tempfile::tempdir().unwrap();
+            let seen = Mutex::new(Vec::new());
+            let mut progress = |p: crate::video::makemkv::CopyProgress| seen.lock().unwrap().push(p.fraction);
+            let file = mk.copy_title(0, 0, dir.path(), &never, &mut progress).await.unwrap();
+            assert!(file.ends_with("THE_LIBRARY_CARD_t00.mkv"));
+            assert!(std::fs::metadata(&file).unwrap().len() > 0);
+            assert_eq!(seen.lock().unwrap().last(), Some(&1.0));
+        }
+
+        #[tokio::test]
+        async fn a_master_only_rip_lays_out_the_upload() {
+            let work = tempfile::tempdir().unwrap();
+            let mk = fake();
+            let tools = FilmTools {
+                makemkv: &mk,
+                ffmpeg: None,
+                type_slug: "film",
+                makemkv_version: Some("MakeMKV v2.0.0".into()),
+            };
+            let events = Mutex::new(Vec::new());
+            let cancel = AtomicBool::new(false);
+            let record = |e| events.lock().unwrap().push(e);
+            let out = rip_film(&job(&[0], true), &tools, &work.path().join("rip"), &cancel, &record)
+                .await
+                .unwrap();
+            // No ffmpeg was given: the master only, and the user is told.
+            let kinds: Vec<_> = out.plan.files.iter().map(|f| (f.kind, f.title.clone())).collect();
+            assert_eq!(
+                kinds,
+                [
+                    (MediaKind::Archive, "Master (lossless MKV): The Library Card".to_owned()),
+                    (MediaKind::Archive, "Rip log".to_owned()),
+                    (MediaKind::Archive, "Rip details (rip.json)".to_owned()),
+                ]
+            );
+            assert!(out.notes[0].contains("No viewing copy"));
+            let ItemTarget::New(item) = &out.plan.item else {
+                panic!("a new item");
+            };
+            assert_eq!((item.type_slug.as_str(), item.title.as_str(), item.year), ("film", "The Library Card", Some(1999)));
+            for file in &out.plan.files {
+                assert_eq!(sha256_file(&file.path).unwrap(), file.sha256);
+            }
+            let json = std::fs::read_to_string(out.folder.join("The Library Card.rip.json")).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(json["kind"], "film");
+            assert_eq!(json["titles"][0]["id"], 0);
+            assert_eq!(json["titles"][0]["streams"][1]["language"], "English");
+            assert_eq!(
+                json["titles"][0]["master"]["sha256"],
+                out.plan.files[0].sha256.to_hex()
+            );
+            let log = std::fs::read_to_string(out.folder.join("The Library Card.rip.log")).unwrap();
+            assert!(log.contains("Viewing copy: none made."));
+            assert!(log.contains("THE_LIBRARY_CARD"));
+            assert!(events.lock().unwrap().contains(&FilmEvent::Finished { title: 0 }));
+        }
+
+        #[tokio::test]
+        async fn a_cancelled_rip_stops() {
+            let work = tempfile::tempdir().unwrap();
+            let mk = fake();
+            let tools = FilmTools {
+                makemkv: &mk,
+                ffmpeg: None,
+                type_slug: "film",
+                makemkv_version: None,
+            };
+            let cancel = AtomicBool::new(true);
+            cancel.store(true, Ordering::Relaxed);
+            let result = rip_film(&job(&[0], false), &tools, &work.path().join("rip"), &cancel, &|_| {}).await;
+            assert!(matches!(result, Err(e) if e.is_cancelled()));
+        }
+
+        #[tokio::test]
+        async fn the_viewing_copy_is_a_webm_that_ffmpeg_can_read_back() {
+            let Ok(ffmpeg) = Ffmpeg::discover().await else {
+                eprintln!("skipped: no ffmpeg with AV1 and Opus here");
+                return;
+            };
+            let work = tempfile::tempdir().unwrap();
+            let mk = fake();
+            let tools = FilmTools {
+                makemkv: &mk,
+                ffmpeg: Some(&ffmpeg),
+                type_slug: "film",
+                makemkv_version: None,
+            };
+            let mut one = job(&[0], true);
+            // The stand-in's clip is two seconds, whatever the scan says.
+            one.titles[0].duration_secs = 2;
+            let events = Mutex::new(Vec::new());
+            let record = |e| events.lock().unwrap().push(e);
+            let out = rip_film(&one, &tools, &work.path().join("rip"), &AtomicBool::new(false), &record)
+                .await
+                .unwrap();
+            let video = &out.plan.files[0];
+            assert_eq!(video.kind, MediaKind::Video);
+            assert!(video.path.extension().is_some_and(|e| e == "webm"));
+            assert_eq!(video.duration_ms, Some(2000));
+            // What ffprobe says about it: AV1 video, Opus sound, square pixels.
+            let probe = std::process::Command::new("ffprobe")
+                .args(["-v", "error", "-show_entries", "stream=codec_name,sample_aspect_ratio,width,height", "-of", "csv=p=0"])
+                .arg(&video.path)
+                .output();
+            if let Ok(probe) = probe {
+                let text = String::from_utf8_lossy(&probe.stdout);
+                assert!(text.contains("av1"), "{text}");
+                assert!(text.contains("opus"), "{text}");
+                // 720x480 with 32:27 pixels is 16:9: 853 or 854 wide, square.
+                assert!(text.contains("480") && !text.contains("720,480"), "{text}");
+            }
+            assert!(events.lock().unwrap().iter().any(|e| matches!(e, FilmEvent::Viewing { .. })));
+            assert!(out.notes.is_empty());
+        }
     }
 }
